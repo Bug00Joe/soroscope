@@ -3,5 +3,7 @@ resolver = "2"
 members = [
     "contracts/error_codes",
     "contracts/math",
+    "contracts/proxy",
     "contracts/staking_rewards",
 ]
+
