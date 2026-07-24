@@ -7,6 +7,7 @@ import { ErrorBoundary } from "../components/ErrorBoundary";
 import { FunctionSidebar } from "../components/FunctionSidebar";
 import { ResultViewer } from "../components/Resultviewer";
 import { UploadZone } from "../components/upload-zone";
+import { StakingCalculator } from "../components/StakingCalculator";
 import { analyzeService } from "../lib/api";
 import {
   MOCK_CONTRACT_FUNCTIONS,
@@ -268,6 +269,11 @@ export default function Home() {
               <ResultViewer result={currentResult} />
             </div>
           </div>
+
+          {/* Staking & Yield Calculator Widget Section */}
+          <section className="mt-8">
+            <StakingCalculator />
+          </section>
         </section>
       </main>
     </>
