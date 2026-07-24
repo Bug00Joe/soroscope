@@ -20,16 +20,18 @@ mod simulation;
 mod simulation_service;
 mod wasm_branch_analysis;
 mod ws;
-mod merkle_tree;
 
 use crate::cache::{ContractCache, SimulationCache};
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
 use crate::merkle_tree::MerkleTree;
 use axum::{
-    extract::State,
+    extract::{Json, Multipart, State},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    middleware,
+    response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Extension, Router,
 };
 use simulation_service::{AnalysisResult, SimulationMetric, SimulationService};
 use std::env;
@@ -46,22 +48,10 @@ use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
-use axum::{
-    extract::{Json, Multipart, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
-    middleware,
-    response::IntoResponse,
-    routing::{get, post},
-    Extension, Router,
-};
 use config::{Config, ConfigError};
 use prometheus::{Encoder, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
-use simulation_service::{AnalysisResult, SimulationMetric, SimulationService};
 use std::collections::HashMap;
-use std::env;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -192,6 +182,8 @@ fn default_fee_analysis_enabled() -> bool {
 
 fn default_emergency_verification_paused() -> bool {
     false
+}
+
 fn default_disk_cache_path() -> String {
     // Empty == L2 disabled. Operators who want persistence set this in
     // env / config.toml explicitly; we don't create a hidden directory
@@ -228,7 +220,6 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("fee_retention_days", 30)?
         .set_default("fee_analysis_enabled", true)?
         .set_default("emergency_verification_paused", false)?
-        .build()?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
         .build()?;
@@ -407,7 +398,7 @@ pub struct AnalyzeRequest {
     pub enable_experimental: Option<bool>,
     /// Whether to generate and include Merkle tree root of the state snapshot
     #[serde(default)]
-    #[schema(example = false, description = "Generate Merkle tree root from state snapshot")]
+    #[schema(example = false)]
     pub include_merkle_tree: Option<bool>,
 }
 
@@ -448,6 +439,8 @@ pub struct ResourceReport {
     pub protocol_version: u32,
     /// Testnet average resource usage for comparison
     pub testnet_averages: TestnetAverages,
+    /// Merkle tree root hash (hex-encoded) of the state snapshot, if requested
+    pub merkle_tree_root: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -463,7 +456,6 @@ pub struct TestnetAverages {
     /// Average transaction size bytes for typical Soroban transactions
     pub transaction_size_bytes: u64,
     /// Merkle tree root hash (hex-encoded) of the state snapshot, if requested
-    #[schema(description = "Merkle tree root hash of the state snapshot (hex-encoded)")]
     pub merkle_tree_root: Option<String>,
 }
 
@@ -751,6 +743,7 @@ fn to_report(result: &SimulationResult, insights_engine: &InsightsEngine, merkle
             ledger_read_bytes: 2_048,
             ledger_write_bytes: 1_024,
             transaction_size_bytes: 600,
+            merkle_tree_root: None,
         },
         merkle_tree_root,
     }
@@ -890,8 +883,9 @@ async fn analyze(
                     tracing::warn!("No ledger entries available for Merkle tree generation");
                     None
                 } else {
-                    match MerkleTree::new(leaves) {
-                        Ok(tree) => {
+                    let mut tree = MerkleTree::new(20);
+                    match tree.build(leaves) {
+                        Ok(()) => {
                             tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
                             Some(tree.get_root_hex())
                         }
@@ -1004,7 +998,7 @@ async fn analyze_wasm(
         protocol_version: payload.protocol_version.unwrap_or(20),
     };
 
-    let report = to_report(&sim_result, &state.insights_engine);
+    let report = to_report(&sim_result, &state.insights_engine, None);
     state
         .metrics
         .resource_utilization_percent
@@ -1636,8 +1630,6 @@ async fn main() {
         }
 
         if let Some(path) = wasm_path {
-            if let Err(e) = benchmarks::run_token_benchmark(path, simulation_service.as_ref()).await {
-                eprintln!("Benchmark failed: {}", e);
             let db_path = env::var("SOROSCOPE_DB_PATH")
                 .unwrap_or_else(|_| "soroscope_metrics.db".to_string());
             let webhook_url = env::var("SOROSCOPE_ALERT_WEBHOOK_URL").ok();
@@ -1761,21 +1753,6 @@ async fn main() {
     // Default Web Server
     println!("SoroScope CLI Initialized. Run with 'benchmark' argument to profile token contract.");
 
-    // build our application with a single route
-    let app = Router::new()
-        .route(
-            "/",
-            get(|| async {
-                "Hello from SoroScope! Use POST /simulations/analyze to persist + compare simulation metrics."
-            }),
-        )
-        .route("/health", get(|| async { "ok" }))
-        .route(
-            "/error",
-            get(|| async { Err::<&str, AppError>(AppError::BadRequest("Test error".to_string())) }),
-        )
-        .route("/simulations/analyze", post(analyze_simulation))
-        .with_state(simulation_service);
     // ── CLI: compare subcommand ──────────────────────────────────────────
     if args.len() > 1 && args[1] == "compare" {
         if args.len() < 4 {

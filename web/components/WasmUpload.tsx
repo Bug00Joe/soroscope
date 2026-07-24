@@ -49,7 +49,7 @@ export default function WasmUpload({
   maxFiles = 5,
   className,
 }: WasmUploadProps) {
-  const [files, setFiles] = useState<<WasmFile[]>([]);
+  const [files, setFiles] = useState<WasmFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
 
   //validate WASM file
@@ -192,11 +192,13 @@ export default function WasmUpload({
   const uploadingCount = files.filter((f) => f.status === "uploading").length;
   const successCount = files.filter((f) => f.status === "success").length;
 
+  const rootProps = getRootProps() as Omit<ReturnType<typeof getRootProps>, 'onAnimationStart' | 'onAnimationEnd' | 'onAnimationIteration'>;
+
   return (
     <div className={cn("w-full max-w-2xl mx-auto", className)}>
       {/*drop Zone*/}
       <motion.div
-        {...getRootProps()}
+        {...rootProps}
         className={cn(
           "relative border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors duration-200",
           isDragActive
