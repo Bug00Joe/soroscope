@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::admin::{has_administrator, read_administrator, write_administrator};
 use crate::allowance::{read_allowance, spend_allowance, write_allowance};
 use crate::balance::{read_balance, receive_balance, spend_balance};
@@ -7,7 +5,7 @@ use crate::metadata::{read_decimal, read_name, read_symbol, write_metadata};
 use emergency_guard::{EmergencyGuard, GuardError, PauseType};
 use soroban_sdk::{contract, contractimpl, vec, Address, Env, String, Vec};
 
-fn ensure_not_paused(e: &Env, operation: u32) {
+fn require_not_paused(e: &Env, operation: u32) {
     if EmergencyGuard::is_paused(e.clone(), operation) {
         panic!("operation paused");
     }
@@ -17,6 +15,22 @@ pub trait TokenTrait {
     fn initialize(e: Env, admin: Address, decimal: u32, name: String, symbol: String);
     fn mint(e: Env, to: Address, amount: i128);
     fn set_admin(e: Env, new_admin: Address);
+    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError>;
+    fn emergency_pause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError>;
+    fn guard_resume(e: Env, approvers: Vec<Address>) -> Result<(), GuardError>;
+    fn guard_add_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        new_admin: Address,
+    ) -> Result<(), GuardError>;
+    fn guard_remove_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        admin: Address,
+    ) -> Result<(), GuardError>;
+    fn guard_admins(e: Env) -> Vec<Address>;
+    fn guard_threshold(e: Env) -> u32;
+    fn guard_is_paused(e: Env, operation: u32) -> bool;
     fn allowance(e: Env, from: Address, spender: Address) -> i128;
     fn approve(e: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32);
     fn balance(e: Env, id: Address) -> i128;
@@ -27,8 +41,6 @@ pub trait TokenTrait {
     fn decimals(e: Env) -> u32;
     fn name(e: Env) -> String;
     fn symbol(e: Env) -> String;
-    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError>;
-    fn guard_unpause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError>;
 }
 
 #[contract]
@@ -41,18 +53,18 @@ impl TokenTrait for Token {
             panic!("already initialized");
         }
         write_administrator(&e, &admin);
+        EmergencyGuard::initialize(e.clone(), vec![&e, admin.clone()], 1)
+            .expect("failed to initialize emergency guard");
+        // One write instead of three separate writes for name/symbol/decimals.
         write_metadata(&e, &name, &symbol, decimal);
-        // Initialize EmergencyGuard with the token admin as the sole guard admin.
-        // Pause state is stored in GuardDataKey::PauseState (instance storage bitmask).
-        let admins: Vec<Address> = vec![&e, admin];
-        EmergencyGuard::initialize(e, admins, 1).expect("failed to initialize emergency guard");
     }
 
     fn mint(e: Env, to: Address, amount: i128) {
-        ensure_not_paused(&e, PauseType::MINT);
+        require_not_paused(&e, PauseType::MINT);
         let admin = read_administrator(&e);
         admin.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         receive_balance(&e, to, amount);
     }
 
@@ -60,15 +72,52 @@ impl TokenTrait for Token {
         let admin = read_administrator(&e);
         admin.require_auth();
         e.storage().instance().extend_ttl(100, 100);
-        // Use EmergencyGuard multi-sig to rotate the guard admin list, then update token admin.
-        EmergencyGuard::rotate_admin(
-            e.clone(),
-            vec![&e, admin.clone()],
-            admin,
-            new_admin.clone(),
-        )
-        .expect("failed to rotate admin via EmergencyGuard");
+
+        EmergencyGuard::add_admin(e.clone(), vec![&e, admin.clone()], new_admin.clone())
+            .expect("failed to add token admin");
+        EmergencyGuard::remove_admin(e.clone(), vec![&e, admin.clone()], admin)
+            .expect("failed to remove old token admin");
         write_administrator(&e, &new_admin);
+    }
+
+    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError> {
+        EmergencyGuard::set_pause(e, admin, operation, paused)
+    }
+
+    fn emergency_pause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
+        EmergencyGuard::emergency_pause(e, approvers)
+    }
+
+    fn guard_resume(e: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
+        EmergencyGuard::resume(e, approvers)
+    }
+
+    fn guard_add_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        new_admin: Address,
+    ) -> Result<(), GuardError> {
+        EmergencyGuard::add_admin(e, approvers, new_admin)
+    }
+
+    fn guard_remove_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        admin: Address,
+    ) -> Result<(), GuardError> {
+        EmergencyGuard::remove_admin(e, approvers, admin)
+    }
+
+    fn guard_admins(e: Env) -> Vec<Address> {
+        EmergencyGuard::get_admins(e)
+    }
+
+    fn guard_threshold(e: Env) -> u32 {
+        EmergencyGuard::get_threshold(e)
+    }
+
+    fn guard_is_paused(e: Env, operation: u32) -> bool {
+        EmergencyGuard::is_paused(e, operation)
     }
 
     fn allowance(e: Env, from: Address, spender: Address) -> i128 {
@@ -77,10 +126,9 @@ impl TokenTrait for Token {
     }
 
     fn approve(e: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
-        // Approvals follow the transfer pause flag.
-        ensure_not_paused(&e, PauseType::TRANSFER);
         from.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         write_allowance(&e, from, spender, amount, expiration_ledger);
     }
 
@@ -90,35 +138,37 @@ impl TokenTrait for Token {
     }
 
     fn transfer(e: Env, from: Address, to: Address, amount: i128) {
-        // Issue #440: check PauseType::TRANSFER to block transfers during emergency.
-        ensure_not_paused(&e, PauseType::TRANSFER);
+        require_not_paused(&e, PauseType::TRANSFER);
         from.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         spend_balance(&e, from, amount);
         receive_balance(&e, to, amount);
     }
 
     fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
-        // Delegated transfers respect the same TRANSFER pause flag.
-        ensure_not_paused(&e, PauseType::TRANSFER);
+        require_not_paused(&e, PauseType::TRANSFER);
         spender.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         spend_allowance(&e, from.clone(), spender, amount);
         spend_balance(&e, from, amount);
         receive_balance(&e, to, amount);
     }
 
     fn burn(e: Env, from: Address, amount: i128) {
-        ensure_not_paused(&e, PauseType::BURN);
+        require_not_paused(&e, PauseType::BURN);
         from.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         spend_balance(&e, from, amount);
     }
 
     fn burn_from(e: Env, spender: Address, from: Address, amount: i128) {
-        ensure_not_paused(&e, PauseType::BURN);
+        require_not_paused(&e, PauseType::BURN);
         spender.require_auth();
         e.storage().instance().extend_ttl(100, 100);
+
         spend_allowance(&e, from.clone(), spender, amount);
         spend_balance(&e, from, amount);
     }
@@ -133,69 +183,5 @@ impl TokenTrait for Token {
 
     fn symbol(e: Env) -> String {
         read_symbol(&e)
-    }
-
-    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError> {
-        EmergencyGuard::set_pause(e, admin, operation, paused)
-    }
-
-    fn guard_unpause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
-        EmergencyGuard::resume(e, approvers)
-    }
-}
-
-/// Additional guard-management helpers exposed on the token contract.
-#[contractimpl]
-impl Token {
-    pub fn pause_minting(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::MINT, true)
-            .expect("unauthorized: caller is not a guard admin");
-    }
-
-    pub fn resume_minting(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::MINT, false).expect("unauthorized");
-    }
-
-    pub fn pause_transfers(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::TRANSFER, true)
-            .expect("unauthorized: caller is not a guard admin");
-    }
-
-    pub fn resume_transfers(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::TRANSFER, false).expect("unauthorized");
-    }
-
-    pub fn pause_burning(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::BURN, true)
-            .expect("unauthorized: caller is not a guard admin");
-    }
-
-    pub fn resume_burning(e: Env, admin: Address) {
-        EmergencyGuard::set_pause(e, admin, PauseType::BURN, false).expect("unauthorized");
-    }
-
-    pub fn emergency_pause_all(e: Env, approvers: Vec<Address>) {
-        EmergencyGuard::emergency_pause(e, approvers)
-            .expect("unauthorized or insufficient approvals");
-    }
-
-    pub fn resume_all(e: Env, approvers: Vec<Address>) {
-        EmergencyGuard::resume(e, approvers).expect("unauthorized or insufficient approvals");
-    }
-
-    pub fn get_pause_state(e: Env) -> u32 {
-        EmergencyGuard::get_pause_state(e)
-    }
-
-    pub fn is_operation_paused(e: Env, operation: u32) -> bool {
-        EmergencyGuard::is_paused(e, operation)
-    }
-
-    pub fn get_guard_admins(e: Env) -> Vec<Address> {
-        EmergencyGuard::get_admins(e)
-    }
-
-    pub fn get_guard_threshold(e: Env) -> u32 {
-        EmergencyGuard::get_threshold(e)
     }
 }

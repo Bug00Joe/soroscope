@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Threshold multi-sig tests for the token contract.
 //!
 //! These tests verify N-of-M multi-sig admin capabilities using the
@@ -9,11 +11,7 @@ use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 // Import EmergencyGuard directly from its crate
 use emergency_guard::{EmergencyGuard, EmergencyGuardClient};
 
-fn setup_guard<'a>(
-    env: &'a Env,
-    admins: &[Address],
-    threshold: u32,
-) -> (EmergencyGuardClient<'a>, Address) {
+fn setup_guard(env: &Env, admins: &[Address], threshold: u32) -> (EmergencyGuardClient, Address) {
     let contract_id = env.register(EmergencyGuard, ());
     let client = EmergencyGuardClient::new(env, &contract_id);
     let admins_vec = {
@@ -23,7 +21,7 @@ fn setup_guard<'a>(
         }
         v
     };
-    client.initialize(&admins_vec, &threshold);
+    client.initialize(&admins_vec, &threshold).unwrap();
     (client, contract_id)
 }
 
@@ -39,7 +37,7 @@ fn test_multisig_2_of_3_pause_succeeds() {
     let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.emergency_pause(&approvers);
+    client.emergency_pause(&approvers).unwrap();
 
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 }
@@ -72,7 +70,7 @@ fn test_multisig_3_of_3_all_required() {
     let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 3);
 
     let approvers = vec![&env, a1.clone(), a2.clone(), a3.clone()];
-    client.emergency_pause(&approvers);
+    client.emergency_pause(&approvers).unwrap();
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 }
 
@@ -88,7 +86,7 @@ fn test_multisig_add_admin() {
     let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.add_admin(&approvers, &new_admin);
+    client.add_admin(&approvers, &new_admin).unwrap();
 
     let admins = client.get_admins();
     assert!(admins.iter().any(|a| a == new_admin));
@@ -106,7 +104,7 @@ fn test_multisig_remove_admin() {
     let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.remove_admin(&approvers, &a3);
+    client.remove_admin(&approvers, &a3).unwrap();
 
     let admins = client.get_admins();
     assert!(!admins.iter().any(|a| a == a3));
@@ -123,10 +121,10 @@ fn test_multisig_resume_after_pause() {
     let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.emergency_pause(&approvers);
+    client.emergency_pause(&approvers).unwrap();
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 
-    client.resume(&approvers);
+    client.resume(&approvers).unwrap();
     assert!(!client.is_paused(&emergency_guard::PauseType::MINT));
 }
 

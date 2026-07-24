@@ -1,50 +1,61 @@
-import { WalletModal } from "../components/WalletModal";
-import { ConnectButton } from "../components/ConnectButton";
-import { useState, useEffect } from 'react';
 import Head from 'next/head';
-import { ResultViewer } from '../components/Resultviewer';
+import React, { useEffect, useState } from 'react';
+
+import { ConnectButton } from '../components/ConnectButton';
+import { ContractInteraction } from '../components/ContractInteraction';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { FunctionSidebar } from '../components/FunctionSidebar';
+import { GasGolfingSuggestionsTable } from '../components/GasGolfingSuggestionsTable';
+import { GasUsageChart } from '../components/GasUsageChart';
 import { InvocationHistory, useInvocationHistory } from '../components/InnovocationHistory';
 import { NutritionLabel } from '../components/NutritionLabel';
-import { FunctionSidebar } from '../components/FunctionSidebar';
-import { ContractInteraction } from '../components/ContractInteraction';
-import { MOCK_CONTRACT_FUNCTIONS, generateMockResult } from '../lib/sorobantypes';
-import type { AnalyzeResponse, ContractFunction, InvocationResult } from '../lib/sorobantypes';
-import { GasUsageChart } from '../components/GasUsageChart';
-import { UploadZone } from '../components/upload-zone';
-import { extractErrorDetails, createUserFriendlyMessage, formatError } from '../lib/errorHandling';
-import { ErrorBoundary } from '../components/ErrorBoundary';
-import { ResultViewerSkeleton } from '../components/ResultViewerSkeleton';
 import { NutritionLabelSkeleton } from '../components/NutritionLabelSkeleton';
-import { ApiError, analyzeService } from '../lib/api';
 import { ResourceHeatmap } from '../components/ResourceHeatmap';
-import { GasGolfingSuggestionsTable } from '../components/GasGolfingSuggestionsTable';
+import { ResultViewer } from '../components/Resultviewer';
+import { ResultViewerSkeleton } from '../components/ResultViewerSkeleton';
+import { UploadZone } from '../components/upload-zone';
+
+import { ApiError, analyzeService, apiUrl } from '../lib/api';
+import { loadLatestAnalysis, saveLatestAnalysis } from '../lib/analysisStorage';
+import { createUserFriendlyMessage, extractErrorDetails, formatError } from '../lib/errorHandling';
 import type { GasGolfingSuggestion } from '../lib/gasGolfingSort';
-import { apiUrl } from '../lib/api';
-import { saveLatestAnalysis, loadLatestAnalysis } from '../lib/analysisStorage';
+import {
+  MOCK_CONTRACT_FUNCTIONS,
+  generateMockResult,
+  type ContractFunction,
+  type InvocationResult,
+} from '../lib/sorobantypes';
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return typeof window !== 'undefined' ? window.btoa(binary) : Buffer.from(binary, 'binary').toString('base64');
+}
 
 export default function Home() {
-  const [contractId, setContractId] = useState('CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q');
-  const [selectedFunction, setSelectedFunction] = useState<ContractFunction>(MOCK_CONTRACT_FUNCTIONS[0]);
+  const [contractId, setContractId] = useState(
+    'CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q'
+  );
+  const [selectedFunction, setSelectedFunction] = useState<ContractFunction>(
+    MOCK_CONTRACT_FUNCTIONS[0]
+  );
   const [currentResult, setCurrentResult] = useState<InvocationResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'explorer' | 'history'>('explorer');
-  const { history, addToHistory } = useInvocationHistory();
   const [wasmFile, setWasmFile] = useState<File | null>(null);
   const [wasmData, setWasmData] = useState<string | null>(null);
+  const [tab, setTab] = useState<'explorer' | 'history'>('explorer');
+
+  // Gas golfing state
   const [gasGolfingSuggestions, setGasGolfingSuggestions] = useState<GasGolfingSuggestion[]>([]);
   const [gasGolfingLoading, setGasGolfingLoading] = useState(false);
   const [gasGolfingError, setGasGolfingError] = useState<string | null>(null);
 
-  function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode(...chunk);
-    }
-    return btoa(binary);
-  }
+  // History hook
+  const { history, addToHistory } = useInvocationHistory();
 
   // Restore the latest analysis result on initial page load
   useEffect(() => {
@@ -57,41 +68,29 @@ export default function Home() {
   const handleSimulate = async (inputs: Record<string, any>, customWasmData?: string) => {
     setLoading(true);
     let errorType: string | undefined;
-    const activeWasmData = customWasmData || wasmData;
+
     try {
-      const url = activeWasmData ? apiUrl('/analyze/wasm') : apiUrl('/analyze');
-      const body = activeWasmData
-        ? {
+      const activeWasmData = customWasmData ?? wasmData;
+      const report = activeWasmData
+        ? await analyzeService.analyzeWasm({
             wasm_bytes: activeWasmData,
             function_name: selectedFunction.name,
-            args: Object.values(inputs).map(val => String(val)),
-          }
-        : {
+            args: Object.values(inputs).map((value) => String(value)),
+          })
+        : await analyzeService.analyze({
             contract_id: contractId,
             function_name: selectedFunction.name,
-          };
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Backend error: ${response.statusText}`);
-      }
-
-      const report: AnalyzeResponse = await response.json();
+          });
 
       const result: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
+        id: Math.random().toString(36).slice(2),
         functionName: selectedFunction.name,
         inputs,
         result: generateMockResult(selectedFunction.name, inputs),
         analysisReport: report,
         resourceCost: report,
         stateSnapshot: report.state_snapshot,
-        callGraphMermaid: report.call_graph_mermaid,
+        callGraphMermaid: report.call_graph_mermaid ?? undefined,
         timestamp: Date.now(),
         success: true,
       };
@@ -110,68 +109,14 @@ export default function Home() {
         id: Math.random().toString(36).substring(7),
         functionName: selectedFunction.name,
         inputs,
-        error: formatted.message,
-        errorType: errorType || formatted.type,
+        error: formatted.message || 'Analysis failed',
+        errorType: errorType || 'ANALYSIS_ERROR',
         timestamp: Date.now(),
         success: false,
       };
+
       setCurrentResult(errorResult);
       addToHistory(errorResult);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFileAnalysis = async (file: File) => {
-    setLoading(true);
-    let errorType: string | undefined;
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const response = await fetch(apiUrl('/analyze'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: arrayBuffer,
-      });
-
-      if (!response.ok) {
-        const errorResponse = await extractErrorDetails(response);
-        errorType = errorResponse.error;
-        const userMessage = createUserFriendlyMessage(errorResponse);
-        throw new Error(userMessage);
-      }
-
-      const report = await response.json();
-
-      const result: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
-        functionName: 'WASM Analysis',
-        inputs: {},
-        result: null,
-        resourceCost: report,
-        stateSnapshot: report.state_snapshot,
-        callGraphMermaid: report.call_graph_mermaid,
-        timestamp: Date.now(),
-        success: true,
-      };
-
-      setCurrentResult(result);
-      addToHistory(result);
-      saveLatestAnalysis(result);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred during analysis';
-
-      const errorResult: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
-        functionName: 'WASM Analysis',
-        inputs: {},
-        error: errorMessage,
-        errorType: errorType || 'UNKNOWN_ERROR',
-        timestamp: Date.now(),
-        success: false,
-      };
-      setCurrentResult(errorResult);
-      addToHistory(errorResult);
-      saveLatestAnalysis(errorResult);
     } finally {
       setLoading(false);
     }
@@ -184,12 +129,13 @@ export default function Home() {
 
     try {
       const bytes = await file.arrayBuffer();
-      const wasmBytes = arrayBufferToBase64(bytes);
+      const base64Bytes = arrayBufferToBase64(bytes);
+
       const res = await fetch(apiUrl('/analyze/gas-golfing'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          wasm_bytes: wasmBytes,
+          wasm_bytes: base64Bytes,
           contract_name: file.name.replace(/\.wasm$/i, ''),
         }),
       });
@@ -201,7 +147,7 @@ export default function Home() {
 
       const data = await res.json();
       setGasGolfingSuggestions(
-        (data?.report?.suggestions ?? []) as GasGolfingSuggestion[],
+        (data?.report?.suggestions ?? []) as GasGolfingSuggestion[]
       );
     } catch (e) {
       setGasGolfingError(e instanceof Error ? e.message : 'Failed to analyze WASM');
@@ -216,10 +162,14 @@ export default function Home() {
     <>
       <Head>
         <title>SoroScope - Soroban Smart Contract Resource Analyzer</title>
-        <meta name="description" content="Explore, test, and analyze the CPU, RAM, and ledger footprint of Soroban smart contracts with absolute precision, utilizing live node queries and direct WASM bytecode analysis." />
+        <meta
+          name="description"
+          content="Explore, test, and analyze the CPU, RAM, and ledger footprint of Soroban smart contracts with absolute precision, utilizing live node queries and direct WASM bytecode analysis."
+        />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
+
       <div style={{ minHeight: '100vh', backgroundColor: '#0f1117' }}>
         {/* Header */}
         <header className="sticky top-0 z-[100] flex flex-col gap-4 border-b border-[#30363d] bg-[#1a1f26] px-6 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-10 lg:pl-[140px] lg:pr-[125px]">
@@ -256,9 +206,10 @@ export default function Home() {
                 Upload Contract
               </h2>
               <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
-                Drop a compiled Soroban contract (.wasm) to analyse its resource usage
+                Drop a compiled Soroban contract (.wasm) to analyze its resource usage
               </p>
             </div>
+
             <ErrorBoundary
               fallback={(error, reset) => (
                 <div className="rounded-lg border border-red-800/60 bg-red-950/30 p-6 text-center text-red-100">
@@ -279,33 +230,28 @@ export default function Home() {
               <UploadZone
                 backendUrl={apiUrl('/analyze/wasm')}
                 enableBackendValidation={true}
-                onFileReady={(file) => {
-                  console.log('[UploadZone] Contract ready for analysis:', file.name, file.size, 'bytes');
+                onFileReady={async (file) => {
                   setWasmFile(file);
-                  const reader = new FileReader();
-                  reader.onload = async (e) => {
-                    const arrayBuffer = e.target?.result as ArrayBuffer;
-                    const bytes = new Uint8Array(arrayBuffer);
-                    let binary = '';
-                    const len = bytes.byteLength;
-                    for (let i = 0; i < len; i++) {
-                      binary += String.fromCharCode(bytes[i]);
-                    }
-                    const base64 = window.btoa(binary);
-                    setWasmData(base64);
-                    await handleSimulate({}, base64);
-                  };
-                  reader.readAsArrayBuffer(file);
+                  const arrayBuffer = await file.arrayBuffer();
+                  const base64 = arrayBufferToBase64(arrayBuffer);
+                  setWasmData(base64);
+
+                  // Trigger gas golfing analysis & simulation
+                  await handleWasmReady(file);
+                  await handleSimulate({}, base64);
                 }}
                 onReset={() => {
                   setWasmFile(null);
                   setWasmData(null);
                   setCurrentResult(null);
+                  setGasGolfingSuggestions([]);
+                  setGasGolfingError(null);
                 }}
               />
             </ErrorBoundary>
           </div>
 
+          {/* Gas Golfing Suggestions Table */}
           <div style={{ marginBottom: '24px' }}>
             {gasGolfingLoading ? (
               <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4 text-sm text-[#8b949e]">
@@ -315,7 +261,7 @@ export default function Home() {
               <div className="rounded-lg border border-[#fb8500] bg-[#0d1117] p-4 text-sm text-[#f0883e]">
                 {gasGolfingError}
               </div>
-            ) : gasGolfingSuggestions.length ? (
+            ) : gasGolfingSuggestions.length > 0 ? (
               <GasGolfingSuggestionsTable suggestions={gasGolfingSuggestions} />
             ) : null}
           </div>
@@ -394,7 +340,7 @@ export default function Home() {
 
             {/* Right Column - Results & History Tabs */}
             <div>
-              {/* Tabs */}
+              {/* Tabs Header */}
               <div
                 style={{
                   display: 'flex',
@@ -402,10 +348,10 @@ export default function Home() {
                   marginBottom: '24px',
                   backgroundColor: '#161b22',
                   borderRadius: '8px 8px 0 0',
-                  gap: '0',
                 }}
               >
                 <button
+                  type="button"
                   onClick={() => setTab('explorer')}
                   style={{
                     flex: 1,
@@ -423,6 +369,7 @@ export default function Home() {
                   Result
                 </button>
                 <button
+                  type="button"
                   onClick={() => setTab('history')}
                   style={{
                     flex: 1,
@@ -441,16 +388,14 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* Tab Content */}
+              {/* Tab Content Body */}
               <div
                 style={{
                   backgroundColor: '#161b22',
-                  borderRadius: '0 8px 8px 8px',
+                  borderRadius: '0 0 8px 8px',
                   padding: '24px',
                   border: '1px solid #30363d',
                   borderTop: 'none',
-                  transition: 'opacity 0.2s',
-                  opacity: 1,
                 }}
               >
                 {tab === 'explorer' ? (
@@ -466,17 +411,20 @@ export default function Home() {
                       <ResultViewer result={currentResult} />
                       {currentResult?.resourceCost && (
                         <div className="mt-4 flex flex-col gap-4">
-                          <ResourceHeatmap resourceCost={{
-                            cpu_instructions: currentResult.resourceCost.cpu_instructions,
-                            ram_bytes: currentResult.resourceCost.ram_bytes,
-                            ledger_read_bytes: currentResult.resourceCost.ledger_read_bytes,
-                            ledger_write_bytes: currentResult.resourceCost.ledger_write_bytes,
-                            transaction_size_bytes: currentResult.resourceCost.transaction_size_bytes,
-                            cost_stroops: (currentResult.resourceCost as any).cost_stroops,
-                            state_snapshot: currentResult.stateSnapshot
-                          }} />
+                          <ResourceHeatmap
+                            resourceCost={{
+                              cpu_instructions: currentResult.resourceCost.cpu_instructions,
+                              ram_bytes: currentResult.resourceCost.ram_bytes,
+                              ledger_read_bytes: currentResult.resourceCost.ledger_read_bytes,
+                              ledger_write_bytes: currentResult.resourceCost.ledger_write_bytes,
+                              transaction_size_bytes: currentResult.resourceCost.transaction_size_bytes,
+                              cost_stroops: (currentResult.resourceCost as any).cost_stroops,
+                              state_snapshot: currentResult.stateSnapshot,
+                            }}
+                          />
+
                           {analysisReport && (
-                            <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
                               <NutritionLabel
                                 cpu_instructions={analysisReport.cpu_instructions}
                                 ram_bytes={analysisReport.ram_bytes}
@@ -495,6 +443,7 @@ export default function Home() {
                               />
                             </div>
                           )}
+
                           <button
                             type="button"
                             onClick={() => {
@@ -502,7 +451,7 @@ export default function Home() {
                               setWasmFile(null);
                               setWasmData(null);
                             }}
-                            className="mt-4 px-4 py-2 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 transition"
+                            className="mt-4 rounded bg-slate-800 px-4 py-2 text-slate-300 transition hover:bg-slate-700"
                           >
                             Clear analysis
                           </button>
@@ -511,10 +460,12 @@ export default function Home() {
                     </>
                   )
                 ) : (
-                  <InvocationHistory onSelectResult={(result) => {
-                    setCurrentResult(result);
-                    setTab('explorer');
-                  }} />
+                  <InvocationHistory
+                    onSelectResult={(result) => {
+                      setCurrentResult(result);
+                      setTab('explorer');
+                    }}
+                  />
                 )}
               </div>
             </div>
@@ -537,14 +488,7 @@ export default function Home() {
                 border: '1px solid #30363d',
               }}
             >
-              <h3
-                style={{
-                  margin: '0 0 8px 0',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: '#00d9ff',
-                }}
-              >
+              <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: '#00d9ff' }}>
                 Simulate
               </h3>
               <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
@@ -561,14 +505,7 @@ export default function Home() {
                 border: '1px solid #30363d',
               }}
             >
-              <h3
-                style={{
-                  margin: '0 0 8px 0',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: '#a371f7',
-                }}
-              >
+              <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: '#a371f7' }}>
                 Invoke
               </h3>
               <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
@@ -585,14 +522,7 @@ export default function Home() {
                 border: '1px solid #30363d',
               }}
             >
-              <h3
-                style={{
-                  margin: '0 0 8px 0',
-                  fontSize: '14px',
-                  fontWeight: '600',
-                  color: '#fb8500',
-                }}
-              >
+              <h3 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: '600', color: '#fb8500' }}>
                 History
               </h3>
               <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
@@ -601,8 +531,6 @@ export default function Home() {
             </div>
           </div>
         </main>
-        {/* Wallet Modal */}
-        <WalletModal />
       </div>
     </>
   );

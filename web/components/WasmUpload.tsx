@@ -15,13 +15,16 @@ import {
 } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { ApiError, analyzeService } from "../lib/api";
+import { createUserFriendlyMessage, formatError } from "../lib/errorHandling";
+import { arrayBufferToBase64 } from "../lib/utils";
 
 // Utility for cleaner tailwind classes
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-//types 
+// Types
 
 interface WasmFile {
   file: File;
@@ -30,6 +33,7 @@ interface WasmFile {
   progress: number;
   error?: string;
   hash?: string;
+  simulationResult?: unknown;
 }
 
 interface WasmUploadProps {
@@ -40,7 +44,31 @@ interface WasmUploadProps {
   className?: string;
 }
 
-//component
+// Helpers moved outside component to prevent re-creation on every render
+const statusToErrorType = (status: number): string => {
+  switch (status) {
+    case 400:
+      return "BAD_REQUEST";
+    case 401:
+      return "UNAUTHORIZED";
+    case 404:
+      return "NOT_FOUND";
+    case 500:
+      return "INTERNAL_SERVER_ERROR";
+    case 503:
+      return "SERVICE_UNAVAILABLE";
+    default:
+      return "UNKNOWN_ERROR";
+  }
+};
+
+// Generate file hash (SHA-256) for WASM identification
+const generateHash = async (file: File): Promise<string> => {
+  const buffer = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 
 export default function WasmUpload({
   onUploadComplete,
@@ -52,71 +80,100 @@ export default function WasmUpload({
   const [files, setFiles] = useState<WasmFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
 
-  //validate WASM file
-  const validateWasm = (file: File): string | null => {
-    if (!file.name.endsWith(".wasm")) {
-      return "File must be a .wasm file";
-    }
-    if (file.size > maxFileSize) {
-      return `File too large (max ${(maxFileSize / 1024 / 1024).toFixed(1)}MB)`;
-    }
-    if (file.size === 0) {
-      return "File is empty";
-    }
-    return null;
-  };
+  // Validate WASM file
+  const validateWasm = useCallback(
+    (file: File): string | null => {
+      if (!file.name.toLowerCase().endsWith(".wasm")) {
+        return "Validation Error: File must be a .wasm file";
+      }
+      if (file.size > maxFileSize) {
+        return `File too large (max ${(maxFileSize / 1024 / 1024).toFixed(1)}MB)`;
+      }
+      if (file.size === 0) {
+        return "File is empty";
+      }
+      return null;
+    },
+    [maxFileSize]
+  );
 
-  //generate file hash (SHA-256) for WASM identification
-  const generateHash = async (file: File): Promise<string> => {
-    const buffer = await file.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-  };
-
-  //simulate upload (replace with actual API call)
-  const uploadFile = async (wasmFile: WasmFile) => {
+  const setUploadProgress = useCallback((id: string, progress: number) => {
     setFiles((prev) =>
-      prev.map((f) =>
-        f.id === wasmFile.id ? { ...f, status: "uploading" } : f
-      )
+      prev.map((f) => (f.id === id ? { ...f, progress } : f))
     );
+  }, []);
 
-    try {
-      //simulate progress
-      for (let i = 0; i <= 100; i += 10) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
+  // Submit WASM to backend simulation engine
+  const uploadFile = useCallback(
+    async (wasmFile: WasmFile) => {
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === wasmFile.id ? { ...f, status: "uploading" } : f
+        )
+      );
+
+      try {
+        setUploadProgress(wasmFile.id, 20);
+        const buffer = await wasmFile.file.arrayBuffer();
+        setUploadProgress(wasmFile.id, 50);
+
+        const wasmBytesBase64 = arrayBufferToBase64(buffer);
+        setUploadProgress(wasmFile.id, 80);
+
+        const simulationResult = await analyzeService.analyzeWasm({
+          wasm_bytes: wasmBytesBase64,
+          function_name: "main",
+          args: [],
+        });
+
+        const hash = await generateHash(wasmFile.file);
+        setUploadProgress(wasmFile.id, 100);
+
         setFiles((prev) =>
           prev.map((f) =>
-            f.id === wasmFile.id ? { ...f, progress: i } : f
+            f.id === wasmFile.id
+              ? { ...f, status: "success", progress: 100, hash, simulationResult }
+              : f
+          )
+        );
+      } catch (err) {
+        let errorMessage = "Upload failed. Please try again.";
+
+        if (err instanceof ApiError) {
+          const body =
+            typeof err.body === "object" && err.body !== null
+              ? (err.body as { error?: unknown; message?: unknown })
+              : undefined;
+          const backendError = {
+            error:
+              typeof body?.error === "string"
+                ? body.error
+                : statusToErrorType(err.status),
+            message:
+              typeof body?.message === "string" ? body.message : err.message,
+            statusCode: err.status,
+          };
+          errorMessage = createUserFriendlyMessage(backendError);
+        } else {
+          const formatted = formatError(err);
+          errorMessage = formatted.message;
+        }
+
+        setFiles((prev) =>
+          prev.map((f) =>
+            f.id === wasmFile.id
+              ? {
+                  ...f,
+                  status: "error",
+                  error: errorMessage,
+                }
+              : f
           )
         );
       }
-
-      //generate hash for Soroban WASM identification
-      const hash = await generateHash(wasmFile.file);
-
-      setFiles((prev) =>
-        prev.map((f) =>
-          f.id === wasmFile.id
-            ? { ...f, status: "success", progress: 100, hash }
-            : f
-        )
-      );
-    } catch (err) {
-      setFiles((prev) =>
-        prev.map((f) =>
-          f.id === wasmFile.id
-            ? {
-                ...f,
-                status: "error",
-                error: "Upload failed. Please try again.",
-              }
-            : f
-        )
-      );
-    }
-  };
+    },
+    [setUploadProgress]
+  );
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -127,7 +184,6 @@ export default function WasmUpload({
         progress: 0,
       }));
 
-      //validate files
       const validFiles: WasmFile[] = [];
       const invalidFiles: WasmFile[] = [];
 
@@ -140,6 +196,13 @@ export default function WasmUpload({
         }
       });
 
+      if (invalidFiles.length > 0) {
+        alert(
+          invalidFiles[0].error ||
+            "Validation Error: Invalid non-WASM file uploaded."
+        );
+      }
+
       const totalFiles = [...files, ...validFiles, ...invalidFiles];
       if (totalFiles.length > maxFiles) {
         alert(`Maximum ${maxFiles} files allowed`);
@@ -149,10 +212,9 @@ export default function WasmUpload({
       setFiles((prev) => [...prev, ...validFiles, ...invalidFiles]);
       onFileSelect?.(validFiles.map((f) => f.file));
 
-      //auto-upload valid files
       validFiles.forEach((f) => uploadFile(f));
     },
-    [files, maxFiles, onFileSelect]
+    [files, maxFiles, onFileSelect, uploadFile, validateWasm]
   );
 
   const { getRootProps, getInputProps, isDragReject } = useDropzone({
@@ -181,22 +243,26 @@ export default function WasmUpload({
     if (file && file.status === "error") {
       setFiles((prev) =>
         prev.map((f) =>
-          f.id === id ? { ...f, status: "pending", error: undefined, progress: 0 } : f
+          f.id === id
+            ? { ...f, status: "pending", error: undefined, progress: 0 }
+            : f
         )
       );
       uploadFile({ ...file, status: "pending", error: undefined, progress: 0 });
     }
   };
 
-  const pendingCount = files.filter((f) => f.status === "pending").length;
   const uploadingCount = files.filter((f) => f.status === "uploading").length;
   const successCount = files.filter((f) => f.status === "success").length;
 
-  const rootProps = getRootProps() as Omit<ReturnType<typeof getRootProps>, 'onAnimationStart' | 'onAnimationEnd' | 'onAnimationIteration'>;
+  const rootProps = getRootProps() as Omit<
+    ReturnType<typeof getRootProps>,
+    "onAnimationStart" | "onAnimationEnd" | "onAnimationIteration"
+  >;
 
   return (
     <div className={cn("w-full max-w-2xl mx-auto", className)}>
-      {/*drop Zone*/}
+      {/* Drop Zone */}
       <motion.div
         {...rootProps}
         className={cn(
@@ -207,17 +273,11 @@ export default function WasmUpload({
             ? "border-red-400 bg-red-50/50"
             : "border-slate-300 hover:border-slate-400 bg-slate-50/50 hover:bg-slate-50"
         )}
-        whileHover={{ scale: 1.01 }}
-        whileTap={{ scale: 0.99 }}
       >
         <input {...getInputProps()} />
 
         <motion.div
-          animate={
-            isDragActive
-              ? { y: [0, -8, 0] }
-              : { y: 0 }
-          }
+          animate={isDragActive ? { y: [0, -8, 0] } : { y: 0 }}
           transition={{ repeat: isDragActive ? Infinity : 0, duration: 1.5 }}
         >
           <div
@@ -238,7 +298,11 @@ export default function WasmUpload({
             : "Upload Soroban WASM Contracts"}
         </h3>
         <p className="text-sm text-slate-500 mb-4">
-          Drag & drop <code className="px-1.5 py-0.5 bg-slate-200 rounded text-xs font-mono">.wasm</code> files, or click to browse
+          Drag & drop{" "}
+          <code className="px-1.5 py-0.5 bg-slate-200 rounded text-xs font-mono">
+            .wasm
+          </code>{" "}
+          files, or click to browse
         </p>
         <div className="flex items-center justify-center gap-2 text-xs text-slate-400">
           <FileCode className="w-4 h-4" />
@@ -248,7 +312,7 @@ export default function WasmUpload({
         </div>
       </motion.div>
 
-      {/* file List  */}
+      {/* File List */}
       <AnimatePresence>
         {files.length > 0 && (
           <motion.div
@@ -257,7 +321,7 @@ export default function WasmUpload({
             exit={{ opacity: 0, y: -20 }}
             className="mt-6 space-y-3"
           >
-            {/* header */}
+            {/* Header */}
             <div className="flex items-center justify-between px-1">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-slate-700">
@@ -282,7 +346,7 @@ export default function WasmUpload({
               </button>
             </div>
 
-            {/* file Items */}
+            {/* File Items */}
             {files.map((wasmFile) => (
               <motion.div
                 key={wasmFile.id}
@@ -300,7 +364,7 @@ export default function WasmUpload({
                 )}
               >
                 <div className="flex items-start gap-3">
-                  {/* icon */}
+                  {/* Icon */}
                   <div
                     className={cn(
                       "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
@@ -324,7 +388,7 @@ export default function WasmUpload({
                     )}
                   </div>
 
-                  {/* info */}
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="text-sm font-medium text-slate-800 truncate">
@@ -335,7 +399,7 @@ export default function WasmUpload({
                       </span>
                     </div>
 
-                    {/* progress bar */}
+                    {/* Progress Bar */}
                     {wasmFile.status === "uploading" && (
                       <div className="mt-2">
                         <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
@@ -352,7 +416,7 @@ export default function WasmUpload({
                       </div>
                     )}
 
-                    {/* success state */}
+                    {/* Success State */}
                     {wasmFile.status === "success" && wasmFile.hash && (
                       <div className="mt-1.5 flex items-center gap-1.5">
                         <code className="text-xs font-mono text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded truncate max-w-[200px]">
@@ -364,7 +428,7 @@ export default function WasmUpload({
                       </div>
                     )}
 
-                    {/* error state */}
+                    {/* Error State */}
                     {wasmFile.status === "error" && wasmFile.error && (
                       <div className="mt-1.5 flex items-center gap-2">
                         <span className="text-xs text-red-600">
@@ -380,12 +444,11 @@ export default function WasmUpload({
                     )}
                   </div>
 
-                  {/* actions */}
+                  {/* Actions */}
                   <div className="flex items-center gap-1">
                     {wasmFile.status === "success" && (
                       <button
                         onClick={() => {
-                          // navigate to analysis or trigger analysis
                           console.log("Analyze WASM:", wasmFile.hash);
                         }}
                         className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
@@ -406,13 +469,15 @@ export default function WasmUpload({
               </motion.div>
             ))}
 
-            {/* analyze all button */}
+            {/* Analyze All Button */}
             {successCount > 0 && (
               <motion.button
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 onClick={() => {
-                  const completed = files.filter((f) => f.status === "success");
+                  const completed = files.filter(
+                    (f) => f.status === "success"
+                  );
                   onUploadComplete?.(completed);
                 }}
                 className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-4 rounded-xl transition-colors flex items-center justify-center gap-2"
