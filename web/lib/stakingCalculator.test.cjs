@@ -72,3 +72,39 @@ test('calculateStakingYield: tier multiplier increases effective APY', () => {
   assert.equal(withMultiplier.multiplier, 1.5);
   assert.equal(withMultiplier.effectiveApyPercent, 15);
 });
+
+test('calculateStakingYield: compound frequencies affect total interest appropriately', () => {
+  const daily = calculateStakingYield({ depositAmount: 1000, compoundFrequency: 'daily', enableTierMultiplier: false });
+  const monthly = calculateStakingYield({ depositAmount: 1000, compoundFrequency: 'monthly', enableTierMultiplier: false });
+  const annually = calculateStakingYield({ depositAmount: 1000, compoundFrequency: 'annually', enableTierMultiplier: false });
+  const simple = calculateStakingYield({ depositAmount: 1000, compoundFrequency: 'none', enableTierMultiplier: false });
+
+  // Higher frequency compounding yields strictly higher or equal returns: Daily >= Monthly >= Annually >= Simple
+  assert.ok(daily.totalInterest >= monthly.totalInterest);
+  assert.ok(monthly.totalInterest >= annually.totalInterest);
+  assert.ok(annually.totalInterest >= simple.totalInterest);
+});
+
+test('calculateStakingYield: handles negative inputs and boundary clamping', () => {
+  const negativeDeposit = calculateStakingYield({ depositAmount: -500, lockDurationMonths: -5 });
+  assert.equal(negativeDeposit.depositAmount, 0);
+  assert.equal(negativeDeposit.lockDurationMonths, 1);
+  assert.equal(negativeDeposit.totalBalance, 0);
+});
+
+test('calculateStakingYield: monthly breakdown matches final balance', () => {
+  const result = calculateStakingYield({
+    depositAmount: 2000,
+    lockDurationMonths: 24,
+    baseApyPercentage: 8,
+    compoundFrequency: 'monthly',
+    enableTierMultiplier: true,
+  });
+
+  assert.equal(result.breakdownByMonth.length, 24);
+  const lastMonth = result.breakdownByMonth[result.breakdownByMonth.length - 1];
+  assert.equal(lastMonth.month, 24);
+  assert.equal(lastMonth.balance, result.totalBalance);
+  assert.equal(lastMonth.yieldEarned, result.totalInterest);
+});
+

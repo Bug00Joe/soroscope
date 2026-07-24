@@ -117,6 +117,13 @@ npm run build
 npm start
 ```
 
+### 🧮 Interactive Token Yield & Staking Calculator Widget
+The web dashboard includes an interactive **Token Yield & Staking Calculator Widget** enabling users to estimate projected APY, compounding returns, and rewards prior to locking tokens into Soroban smart contracts:
+- **Interactive Parameters**: Sliders and numerical inputs for Deposit Amount, Lock Duration (1-36M), Base APY, Compound Frequency (Daily, Weekly, Monthly, Quarterly, Annually, Simple Interest), and Duration Tier Multiplier toggles.
+- **Real-Time Return Projections**: Computes Projected Total Balance, Total Rewards, Effective APY, ROI %, and Estimated Daily & Monthly Earnings.
+- **Milestone Schedule**: Interactive Monthly Milestone Schedule detailing cumulative yield and balance progression.
+- **Unit Testing**: Tests under `web/lib/stakingCalculator.test.cjs` and `web/components/StakingCalculator.test.cjs`.
+
 ---
 
 ## 📦 Contracts (`/contracts`)
