@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { Menu, X, Layers, History, Activity } from "lucide-react";
+import { Menu, X, Layers, History, Activity, List } from "lucide-react";
 import { ConnectButton } from "./ConnectButton";
 
-export type NavTab = "explorer" | "history";
+export type NavTab = "explorer" | "history" | "transactions";
 
 interface HeaderNavProps {
   tab: NavTab;
@@ -106,6 +106,18 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
             <History className="h-4 w-4" />
             History
           </button>
+          <button
+            type="button"
+            onClick={() => setTab("transactions")}
+            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
+              tab === "transactions"
+                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
+                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+            }`}
+          >
+            <List className="h-4 w-4" />
+            Transactions
+          </button>
         </div>
       </div>
 
@@ -170,6 +182,19 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
                 >
                   <History className="h-5 w-5" />
                   <span>History</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab("transactions")}
+                  className={`flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium transition-colors ${
+                    tab === "transactions"
+                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold"
+                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
+                  }`}
+                >
+                  <List className="h-5 w-5" />
+                  <span>Transactions</span>
                 </button>
               </nav>
             </div>
