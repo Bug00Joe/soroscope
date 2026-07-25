@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { InvocationResult } from '../lib/sorobantypes';
+import { getEncryptedLocalStorage } from '../lib/encryptedStorage';
 
 interface InvocationHistoryProps {
   onSelectResult: (result: InvocationResult) => void;
@@ -16,21 +17,36 @@ export function useInvocationHistory() {
 
   useEffect(() => {
     setMounted(true);
-    const saved = localStorage.getItem(HISTORY_KEY);
-    if (saved) {
+    let active = true;
+
+    async function restoreHistory() {
       try {
-        setHistory(JSON.parse(saved));
+        const saved = await getEncryptedLocalStorage()?.getItem(HISTORY_KEY);
+        if (active && saved) {
+          setHistory(JSON.parse(saved));
+        }
       } catch {
-        setHistory([]);
+        if (active) {
+          setHistory([]);
+        }
       }
     }
+
+    void restoreHistory();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const addToHistory = (result: InvocationResult) => {
     setHistory((prev) => {
       const updated = [result, ...prev].slice(0, MAX_HISTORY);
       if (mounted) {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        void getEncryptedLocalStorage()
+          ?.setItem(HISTORY_KEY, JSON.stringify(updated))
+          .catch((error: unknown) => {
+            console.warn('Failed to save invocation history:', error);
+          });
       }
       return updated;
     });
@@ -39,7 +55,7 @@ export function useInvocationHistory() {
   const clearHistory = () => {
     setHistory([]);
     if (mounted) {
-      localStorage.removeItem(HISTORY_KEY);
+      getEncryptedLocalStorage()?.removeItem(HISTORY_KEY);
     }
   };
 
