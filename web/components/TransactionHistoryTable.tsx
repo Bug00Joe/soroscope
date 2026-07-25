@@ -66,16 +66,19 @@ function SkeletonRow() {
         <div className="h-4 w-64 rounded bg-slate-800" />
       </td>
       <td className="px-4 py-3">
-        <div className="h-5 w-16 rounded-full bg-slate-800" />
+        <div className="h-4 w-20 rounded bg-slate-800" />
       </td>
       <td className="px-4 py-3">
-        <div className="h-4 w-20 rounded bg-slate-800" />
+        <div className="h-5 w-16 rounded-full bg-slate-800" />
       </td>
       <td className="px-4 py-3">
         <div className="h-4 w-24 rounded bg-slate-800" />
       </td>
       <td className="px-4 py-3">
         <div className="h-4 w-16 rounded bg-slate-800" />
+      </td>
+      <td className="px-4 py-3">
+        <div className="h-4 w-12 rounded bg-slate-800" />
       </td>
     </tr>
   );

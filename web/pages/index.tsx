@@ -1,7 +1,7 @@
 import Head from "next/head";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { HeaderNav } from "../components/HeaderNav";
+import { HeaderNav, type NavTab } from "../components/HeaderNav";
 import { ConnectButton } from "../components/ConnectButton";
 import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -26,7 +26,7 @@ import {
 } from "../lib/sorobantypes";
 
 export default function Home() {
-  const [tab, setTab] = useState<'explorer' | 'history'>('explorer');
+  const [tab, setTab] = useState<NavTab>('explorer');
   const [contractId, setContractId] = useState(
     "CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q",
   );
