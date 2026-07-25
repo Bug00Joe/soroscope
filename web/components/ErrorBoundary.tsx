@@ -79,7 +79,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
         <div
           role="alert"
           aria-live="assertive"
-          className="flex min-h-[320px] items-center justify-center rounded-xl border border-red-900/60 bg-[#0d1117] p-6 text-red-100 shadow-2xl"
+          className="flex min-h-[320px] items-center justify-center rounded-xl border border-red-900/60 bg-[var(--bg-elevated)] p-6 text-red-100 shadow-2xl"
         >
           <div className="w-full max-w-xl rounded-xl border border-red-800/60 bg-red-950/30 p-6 shadow-xl shadow-black/20">
             <div className="flex items-start gap-4">
