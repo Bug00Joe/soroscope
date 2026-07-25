@@ -1,3 +1,4 @@
+```rust
 #![allow(dead_code)]
 
 mod auth;
@@ -19,12 +20,14 @@ mod runner;
 mod simulation;
 mod simulation_service;
 mod wasm_branch_analysis;
+mod worker_pool;
 mod ws;
 
 use crate::cache::{ContractCache, SimulationCache};
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
 use crate::merkle_tree::MerkleTree;
+use crate::worker_pool::EventWorkerPool;
 use axum::{
     extract::{Json, Multipart, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
@@ -48,7 +51,6 @@ use crate::fee_store::FeeStore;
 use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
-use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
@@ -79,8 +81,8 @@ struct AppConfig {
     /// JSON-encoded array of RPC provider objects.  Example:
     /// ```json
     /// [
-    ///   {"name":"stellar-testnet","url":"https://soroban-testnet.stellar.org"},
-    ///   {"name":"blockdaemon","url":"https://soroban.blockdaemon.com","auth_header":"X-API-Key","auth_value":"KEY"}
+    ///   {"name":"stellar-testnet","url":"[https://soroban-testnet.stellar.org](https://soroban-testnet.stellar.org)"},
+    ///   {"name":"blockdaemon","url":"[https://soroban.blockdaemon.com](https://soroban.blockdaemon.com)","auth_header":"X-API-Key","auth_value":"KEY"}
     /// ]
     /// ```
     /// When empty or absent the engine falls back to `soroban_rpc_url`.
@@ -116,6 +118,9 @@ struct AppConfig {
     /// Max concurrent jobs (default 10).
     #[serde(default = "default_max_concurrent_jobs")]
     max_concurrent_jobs: usize,
+    /// Number of threads for the dedicated event worker pool.
+    #[serde(default = "default_event_worker_threads")]
+    event_worker_threads: usize,
     /// Fee data collection interval in seconds (default 5).
     #[serde(default = "default_fee_collection_interval")]
     fee_collection_interval_secs: u64,
@@ -168,6 +173,10 @@ fn default_max_concurrent_jobs() -> usize {
     10
 }
 
+fn default_event_worker_threads() -> usize {
+    4
+}
+
 fn default_fee_collection_interval() -> u64 {
     5
 }
@@ -215,6 +224,7 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("database_url", "sqlite://soroscope.db")?
         .set_default("job_timeout_secs", 300)?
         .set_default("max_concurrent_jobs", 10)?
+        .set_default("event_worker_threads", 4)?
         .set_default("fee_collection_interval_secs", 5)?
         .set_default("fee_retention_days", 30)?
         .set_default("fee_analysis_enabled", true)?
@@ -314,6 +324,8 @@ pub struct AppState {
     /// Job queue for background task processing
     #[allow(dead_code)]
     job_queue: JobQueue,
+    /// Dedicated worker pool for heavy event parsing
+    event_worker_pool: Arc<EventWorkerPool>,
     /// Fee market analytics engine
     fee_analytics_engine: FeeAnalyticsEngine,
     /// Fee data store
@@ -445,8 +457,6 @@ pub struct TestnetAverages {
     /// Average CPU instructions for typical Soroban transactions
     pub cpu_instructions: u64,
     /// Average RAM bytes for typical Soroban transactions
-    pub ram_bytes: u64,
-    /// Average ledger read bytes for typical Soroban transactions
     pub ledger_read_bytes: u64,
     /// Average ledger write bytes for typical Soroban transactions
     pub ledger_write_bytes: u64,
@@ -880,13 +890,11 @@ async fn analyze(
                 tracing::warn!("No ledger entries available for Merkle tree generation");
                 None
             } else {
-                let mut tree = MerkleTree::new(256);
                 let mut tree = MerkleTree::new(32);
                 if let Err(e) = tree.build(leaves) {
                     tracing::error!("Failed to generate Merkle tree: {}", e);
                     None
                 } else {
-                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
                     tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count());
                     Some(tree.get_root_hex())
                 }
@@ -1921,6 +1929,11 @@ async fn main() {
     );
     tracing::info!(mode = ?simulation_mode, "Simulation mode configured");
 
+    // Initialize the dedicated event worker pool
+    let event_pool = Arc::new(EventWorkerPool::new(config.event_worker_threads)
+        .expect("Failed to build event worker pool"));
+    tracing::info!("Dedicated event worker pool initialized with {} threads", config.event_worker_threads);
+
     // ── Fee Market Setup ────────────────────────────────────────────────
     let database_url = &config.database_url;
     tracing::info!(database_url = %database_url, "Initializing database");
@@ -2052,6 +2065,7 @@ async fn main() {
         gas_golfing_analyzer: GasGolfingAnalyzer::new(),
         simulation_timeout,
         job_queue,
+        event_worker_pool: Arc::clone(&event_pool),
         fee_analytics_engine,
         fee_store,
         metrics: Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics")),
@@ -2274,11 +2288,13 @@ mod tests {
 
     fn build_test_app() -> Router {
         use std::sync::Arc;
+        let event_pool = Arc::new(EventWorkerPool::new(4).unwrap());
         let app_state = Arc::new(AppState {
             engine: SimulationEngine::new("https://test.example.com".to_string()),
             cache: SimulationCache::new(),
             insights_engine: InsightsEngine::new(),
             simulation_timeout: std::time::Duration::from_secs(30),
+            event_worker_pool: Arc::clone(&event_pool),
         });
         let auth_state = Arc::new(auth::AuthState::new(
             "test-secret".to_string(),
@@ -2443,3 +2459,5 @@ async fn analyze_simulation(
     let result = simulation_service.record_and_analyze(metric).await?;
     Ok(Json(result))
 }
+
+```
