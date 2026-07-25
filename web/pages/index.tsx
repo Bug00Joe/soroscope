@@ -1,6 +1,7 @@
 import Head from "next/head";
 import { useCallback, useEffect, useState } from "react";
 
+import { HeaderNav } from "../components/HeaderNav";
 import { ConnectButton } from "../components/ConnectButton";
 import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -103,37 +104,7 @@ export default function Home() {
         />
       </Head>
       <main className="min-h-screen bg-slate-950 text-slate-100">
-        <header className="sticky top-0 z-50 border-b border-slate-800 bg-slate-950/90 backdrop-blur">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-            <div>
-              <h1 className="text-2xl font-bold text-cyan-400">SoroScope</h1>
-              <p className="text-sm text-slate-400">Soroban analysis workspace</p>
-            </div>
-            <ConnectButton />
-          </div>
-          <div className="flex border-b border-slate-800">
-            <button
-              onClick={() => setTab('explorer')}
-              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
-                tab === 'explorer'
-                  ? 'text-cyan-400 border-b-2 border-cyan-400'
-                  : 'text-slate-400 hover:text-slate-300'
-              }`}
-            >
-              Result
-            </button>
-            <button
-              onClick={() => setTab('history')}
-              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
-                tab === 'history'
-                  ? 'text-cyan-400 border-b-2 border-cyan-400'
-                  : 'text-slate-400 hover:text-slate-300'
-              }`}
-            >
-              History
-            </button>
-          </div>
-        </header>
+        <HeaderNav tab={tab} setTab={setTab} />
 
         <section className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
           <div className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
