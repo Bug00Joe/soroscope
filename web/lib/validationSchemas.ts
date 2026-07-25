@@ -76,6 +76,8 @@ export function getSchema(sorobanType: SorobanType): z.ZodType<string> {
     case 'struct':
     case 'enum':
       return passThroughSchema;
+    default:
+      return passThroughSchema;
   }
 }
 
