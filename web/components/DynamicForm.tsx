@@ -5,6 +5,7 @@ import React from "react"
 import { useState } from 'react';
 import type { ContractFunction, SimulationInputs } from '../lib/sorobantypes';
 import { Loader2 } from 'lucide-react';
+import { validateField } from '../lib/validationSchemas';
 
 interface DynamicFormProps {
   func: ContractFunction;
@@ -14,9 +15,17 @@ interface DynamicFormProps {
 
 export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
   const [formData, setFormData] = useState<SimulationInputs>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const handleChange = (name: string, value: string | number | boolean) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
+    if (errors[name]) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+    }
   };
 
   const fieldValue = (name: string) => {
@@ -26,15 +35,48 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const newErrors: Record<string, string> = {};
+    for (const input of func.inputs) {
+      const raw = fieldValue(input.name);
+      if (!input.optional || raw !== '') {
+        const result = validateField(input.type, raw);
+        if (!result.success) {
+          newErrors[input.name] = result.error ?? 'Invalid value';
+        }
+      }
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    setErrors({});
     onSubmit(formData);
   };
+
+  function inputStyle(hasError: boolean): React.CSSProperties {
+    return {
+      padding: '8px 12px',
+      border: `1px solid ${hasError ? '#f85149' : '#30363d'}`,
+      borderRadius: '6px',
+      fontSize: '14px',
+      boxSizing: 'border-box',
+      backgroundColor: '#0d1117',
+      color: '#c9d1d9',
+    };
+  }
 
   return (
     <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {func.inputs.length === 0 ? (
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>No inputs required</p>
       ) : (
-        func.inputs.map((input) => (
+        func.inputs.map((input) => {
+          const hasError = !!errors[input.name];
+
+          return (
           <div
             key={input.name}
             style={{
@@ -76,6 +118,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 onChange={(e) => handleChange(input.name, e.target.value)}
                 required={!input.optional}
                 disabled={loading}
+                style={{ ...inputStyle(hasError), fontFamily: 'monospace' }}
                 style={{
                   padding: '8px 12px',
                   border: '1px solid var(--border-default)',
@@ -89,12 +132,13 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
               />
             ) : input.type === 'u32' || input.type === 'u128' || input.type === 'i128' ? (
               <input
-                type="number"
+                type="text"
                 placeholder={`Enter ${input.type} value`}
                 value={fieldValue(input.name)}
                 onChange={(e) => handleChange(input.name, e.target.value)}
                 required={!input.optional}
                 disabled={loading}
+                style={inputStyle(hasError)}
                 style={{
                   padding: '8px 12px',
                   border: '1px solid var(--border-default)',
@@ -113,6 +157,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 onChange={(e) => handleChange(input.name, e.target.value)}
                 required={!input.optional}
                 disabled={loading}
+                style={inputStyle(hasError)}
                 style={{
                   padding: '8px 12px',
                   border: '1px solid var(--border-default)',
@@ -129,6 +174,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 onChange={(e) => handleChange(input.name, e.target.value === 'true')}
                 required={!input.optional}
                 disabled={loading}
+                style={inputStyle(hasError)}
                 style={{
                   padding: '8px 12px',
                   border: '1px solid var(--border-default)',
@@ -151,6 +197,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 onChange={(e) => handleChange(input.name, e.target.value)}
                 required={!input.optional}
                 disabled={loading}
+                style={inputStyle(hasError)}
                 style={{
                   padding: '8px 12px',
                   border: '1px solid var(--border-default)',
@@ -162,8 +209,14 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 }}
               />
             )}
+            {hasError && (
+              <p style={{ color: '#f85149', fontSize: '12px', margin: '2px 0 0 0' }}>
+                {errors[input.name]}
+              </p>
+            )}
           </div>
-        ))
+          );
+        })
       )}
       <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
         <button
