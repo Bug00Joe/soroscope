@@ -4,6 +4,12 @@ import React, { useCallback, useState } from 'react';
 import { useDropzone, FileRejection } from 'react-dropzone';
 import { parseWasmError } from '../lib/errorHandling';
 import { arrayBufferToBase64 } from '../lib/utils';
+import {
+  isWithinMaxFileSize,
+  MAX_WASM_FILE_SIZE_BYTES,
+  readFileInChunks,
+  validateWasmBuffer,
+} from '../lib/wasmUpload';
 
 type UploadState = 'idle' | 'hover' | 'scanning' | 'success' | 'error' | 'submitting';
 
@@ -89,11 +95,11 @@ function WasmIcon({ state }: { state: UploadState }) {
   );
 }
 
-function UploadProgressBar({ progress }: { progress: number }) {
+function UploadProgressBar({ progress, label = 'Reading file...' }: { progress: number; label?: string }) {
   return (
     <div className="w-full mt-3">
       <div className="flex justify-between text-xs text-slate-400 mb-1">
-        <span>Uploading...</span>
+        <span>{label}</span>
         <span>{progress}%</span>
       </div>
       <div className="w-full overflow-hidden rounded-full h-2 bg-slate-800">
@@ -200,130 +206,72 @@ export function UploadZone({
     throw unexpectedError;
   }
 
-  const submitToBackend = useCallback(async (file: File): Promise<boolean> => {
+  const submitToBackend = useCallback(async (file: File, arrayBuffer: ArrayBuffer): Promise<boolean> => {
     try {
       setUploadState('submitting');
-      setUploadProgress(0);
-      const reader = new FileReader();
 
-      reader.onprogress = (event) => {
-        if (event.lengthComputable) {
-          setUploadProgress(Math.round((event.loaded / event.total) * 100));
-        }
-      };
+      const base64Data = arrayBufferToBase64(arrayBuffer);
 
-      return new Promise((resolve) => {
-        reader.onload = async (event) => {
-          try {
-            setUploadProgress(100);
-            const arrayBuffer = event.target?.result as ArrayBuffer;
-            if (!arrayBuffer) throw new Error('Failed to read file');
+      const response = await fetch(backendUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wasm_bytes: base64Data,
+          function_name: 'main',
+          args: [],
+        }),
+      });
 
-            const base64Data = arrayBufferToBase64(arrayBuffer);
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const errData = await response.json();
 
-            const response = await fetch(backendUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                wasm_bytes: base64Data,
-                function_name: 'main',
-                args: [],
-              }),
+          if (errData.error && typeof errData.error === 'object') {
+            const errorMessage = errData.error.message || `Backend error: ${response.status}`;
+            const parseResult = parseWasmError(response, errorMessage);
+
+            setErrorDetails({
+              title: 'WASM Validation Failed',
+              message: parseResult.message,
+              details: parseResult.details,
+              suggestedAction: parseResult.suggestedAction
             });
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              const contentType = response.headers.get('content-type');
-              if (contentType && contentType.includes('application/json')) {
-                const errData = await response.json();
-
-                if (errData.error && typeof errData.error === 'object') {
-                  const parseResult = parseWasmError(errData.error);
-
-                  setErrorDetails({
-                    title: 'WASM Validation Failed',
-                    message: parseResult.message,
-                    details: parseResult.details,
-                    suggestedAction: parseResult.suggestion
-                  });
-                  setErrorMessage(parseResult.message);
-                } else {
-                  const errorMsg = errData.message || `Backend error: ${response.status}`;
-                  setErrorMessage(errorMsg);
-                  setErrorDetails({
-                    title: 'Analysis Failed',
-                    message: errorMsg,
-                    suggestedAction: 'Please check your contract code and try again.'
-                  });
-                }
-              } else {
-                const textErr = await response.text();
-                setErrorMessage(textErr || `Server returned ${response.status}`);
-                setErrorDetails({
-                  title: 'Server Error',
-                  message: textErr || `HTTP ${response.status}`,
-                  suggestedAction: 'The server encountered an error. Please try again later.'
-                });
-              }
-              setUploadState('error');
-              setDroppedFile(null);
-              resolve(false);
-              return;
-            }
-
-            await response.json();
-            setUploadState('success');
-            onFileReady?.(file);
-            resolve(true);
-          } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : 'Analysis request failed';
+            setErrorMessage(parseResult.message);
+          } else {
+            const errorMsg = errData.message || `Backend error: ${response.status}`;
             setErrorMessage(errorMsg);
             setErrorDetails({
-              title: 'Connection Error',
+              title: 'Analysis Failed',
               message: errorMsg,
-              suggestedAction: 'Please verify the backend service is running and accessible.'
+              suggestedAction: 'Please check your contract code and try again.'
             });
-            setUploadState('error');
-            setDroppedFile(null);
-            resolve(false);
           }
-        };
-
-        reader.onerror = () => {
-          const errorMsg = reader.error?.message ?? 'Unable to read the selected file';
-          setErrorMessage(errorMsg);
+        } else {
+          const textErr = await response.text();
+          setErrorMessage(textErr || `Server returned ${response.status}`);
           setErrorDetails({
-            title: 'File Read Error',
-            message: errorMsg,
-            suggestedAction: 'Please try selecting the file again.',
+            title: 'Server Error',
+            message: textErr || `HTTP ${response.status}`,
+            suggestedAction: 'The server encountered an error. Please try again later.'
           });
-          setUploadState('error');
-          setDroppedFile(null);
-          resolve(false);
-        };
-
-        try {
-          reader.readAsArrayBuffer(file);
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : 'Unable to start reading file';
-          setErrorMessage(errorMsg);
-          setErrorDetails({
-            title: 'File Read Error',
-            message: errorMsg,
-            suggestedAction: 'Please try selecting a different file.',
-          });
-          setUploadState('error');
-          setDroppedFile(null);
-          resolve(false);
         }
-      });
+        setUploadState('error');
+        setDroppedFile(null);
+        return false;
+      }
+
+      await response.json();
+      setUploadState('success');
+      onFileReady?.(file);
+      return true;
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'An unexpected error occurred';
+      const errorMsg = error instanceof Error ? error.message : 'Analysis request failed';
       setErrorMessage(errorMsg);
       setErrorDetails({
-        title: 'Submission Error',
+        title: 'Connection Error',
         message: errorMsg,
-        suggestedAction: 'Please try again.',
+        suggestedAction: 'Please verify the backend service is running and accessible.'
       });
       setUploadState('error');
       setDroppedFile(null);
@@ -332,77 +280,61 @@ export function UploadZone({
   }, [backendUrl, onFileReady]);
 
   const onDropAccepted = useCallback(
-    (files: File[]) => {
+    async (files: File[]) => {
       const file = files[0];
       setDroppedFile({ name: file.name, sizeBytes: file.size });
-      setUploadState('scanning');
       setErrorMessage('');
       setErrorDetails(null);
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setTimeout(async () => {
-          try {
-            const arrayBuffer = event.target?.result as ArrayBuffer;
-            if (!arrayBuffer) throw new Error('Failed to read file content');
+      if (!isWithinMaxFileSize(file.size)) {
+        const errorMsg = `File is too large (${formatBytes(file.size)}). Maximum allowed size is ${formatBytes(MAX_WASM_FILE_SIZE_BYTES)}.`;
+        setErrorMessage(errorMsg);
+        setErrorDetails({
+          title: 'File Too Large',
+          message: errorMsg,
+          suggestedAction: 'Please upload a smaller compiled .wasm file, or optimize your contract to reduce its size.',
+        });
+        setUploadState('error');
+        setDroppedFile(null);
+        return;
+      }
 
-            if (arrayBuffer.byteLength < 8) {
-              throw new Error('File is too small to be a valid WebAssembly module');
-            }
+      setUploadState('scanning');
+      setUploadProgress(0);
 
-            const view = new DataView(arrayBuffer);
+      try {
+        const arrayBuffer = await readFileInChunks(file, (bytesRead, totalBytes) => {
+          setUploadProgress(totalBytes > 0 ? Math.round((bytesRead / totalBytes) * 100) : 100);
+        });
 
-            const magicNumber = view.getUint32(0, false);
-            if (magicNumber !== 0x0061736d) {
-              throw new Error('Invalid WASM magic number. File is not a valid WebAssembly module');
-            }
+        try {
+          validateWasmBuffer(arrayBuffer);
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Failed to parse WASM metadata';
+          setErrorMessage(errorMsg);
+          setErrorDetails({
+            title: 'Invalid WASM File',
+            message: errorMsg,
+            suggestedAction: 'Please ensure you\'re uploading a valid compiled Soroban contract.',
+          });
+          setUploadState('error');
+          setDroppedFile(null);
+          return;
+        }
 
-            const version = view.getUint32(4, true);
-            if (version !== 1) {
-              throw new Error(`Unsupported WASM version: ${version}. Expected version 1`);
-            }
-
-            if (enableBackendValidation) {
-              await submitToBackend(file);
-            } else {
-              setUploadState('success');
-              onFileReady?.(file);
-            }
-          } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : 'Failed to parse WASM metadata';
-            setErrorMessage(errorMsg);
-            setErrorDetails({
-              title: 'Invalid WASM File',
-              message: errorMsg,
-              suggestedAction: 'Please ensure you\'re uploading a valid compiled Soroban contract.',
-            });
-            setUploadState('error');
-            setDroppedFile(null);
-          }
-        }, 800);
-      };
-
-      reader.onerror = () => {
-        const errorMsg = reader.error?.message ?? 'Unable to read the selected file';
+        if (enableBackendValidation) {
+          await submitToBackend(file, arrayBuffer);
+        } else {
+          setUploadState('success');
+          onFileReady?.(file);
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unable to read the selected file';
         setErrorMessage(errorMsg);
         setErrorDetails({
           title: 'File Read Error',
           message: errorMsg,
           suggestedAction: 'Please try selecting the file again.',
-        });
-        setUploadState('error');
-        setDroppedFile(null);
-      };
-
-      try {
-        reader.readAsArrayBuffer(file);
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : 'Unable to start reading the selected file';
-        setErrorMessage(errorMsg);
-        setErrorDetails({
-          title: 'File Read Error',
-          message: errorMsg,
-          suggestedAction: 'Please try selecting a different file.',
         });
         setUploadState('error');
         setDroppedFile(null);
@@ -568,9 +500,9 @@ export function UploadZone({
                 <span>{formatBytes(droppedFile.sizeBytes)}</span>
               </div>
             )}
-            <ScanningAnimation />
+            <UploadProgressBar progress={uploadProgress} />
             <SpinnerDots />
-            <p className="text-xs text-slate-500">Parsing WASM binary · analysing resource usage…</p>
+            <p className="text-xs text-slate-500">Reading file in chunks · parsing WASM binary…</p>
           </div>
         )}
 
@@ -588,9 +520,9 @@ export function UploadZone({
                 <span>{formatBytes(droppedFile.sizeBytes)}</span>
               </div>
             )}
-            <UploadProgressBar progress={uploadProgress} />
+            <ScanningAnimation />
             <SpinnerDots />
-            <p className="text-xs text-slate-500">Reading file and sending to backend…</p>
+            <p className="text-xs text-slate-500">Sending to backend for analysis…</p>
           </div>
         )}
 
