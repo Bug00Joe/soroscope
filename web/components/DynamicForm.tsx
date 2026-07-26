@@ -71,7 +71,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
   return (
     <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {func.inputs.length === 0 ? (
-        <p style={{ color: '#8b949e', fontSize: '14px' }}>No inputs required</p>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>No inputs required</p>
       ) : (
         func.inputs.map((input) => {
           const hasError = !!errors[input.name];
@@ -89,12 +89,12 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
               style={{
                 fontSize: '14px',
                 fontWeight: '500',
-                color: '#c9d1d9',
+                color: 'var(--text-primary)',
               }}
             >
               {input.name}
               {input.optional ? (
-                <span style={{ color: '#8b949e', marginLeft: '4px' }}>(optional)</span>
+                <span style={{ color: 'var(--text-secondary)', marginLeft: '4px' }}>(optional)</span>
               ) : (
                 <span style={{ color: '#fb8500' }}>*</span>
               )}
@@ -103,7 +103,7 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
               <p
                 style={{
                   fontSize: '12px',
-                  color: '#8b949e',
+                  color: 'var(--text-secondary)',
                   margin: '0',
                 }}
               >
@@ -119,6 +119,16 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 required={!input.optional}
                 disabled={loading}
                 style={{ ...inputStyle(hasError), fontFamily: 'monospace' }}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  fontFamily: 'monospace',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                }}
               />
             ) : input.type === 'u32' || input.type === 'u128' || input.type === 'i128' ? (
               <input
@@ -129,6 +139,15 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                }}
               />
             ) : input.type === 'string' || input.type === 'symbol' ? (
               <input
@@ -139,6 +158,15 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                }}
               />
             ) : input.type === 'bool' ? (
               <select
@@ -147,6 +175,15 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                }}
               >
                 <option value="">Select value</option>
                 <option value="true">True</option>
@@ -161,6 +198,15 @@ export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
+                style={{
+                  padding: '8px 12px',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box',
+                  backgroundColor: 'var(--bg-input)',
+                  color: 'var(--text-primary)',
+                }}
               />
             )}
             {hasError && (

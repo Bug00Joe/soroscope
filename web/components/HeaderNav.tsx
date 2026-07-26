@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Menu, X, Layers, History, Activity } from "lucide-react";
+import { Menu, X, Layers, History, Activity, Sun, Moon } from "lucide-react";
+import { useTheme } from "next-themes";
 import { ConnectButton } from "./ConnectButton";
 
 export type NavTab = "explorer" | "history";
@@ -11,6 +12,12 @@ interface HeaderNavProps {
 
 export function HeaderNav({ tab, setTab }: HeaderNavProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close drawer on Escape key press
   useEffect(() => {
@@ -60,6 +67,16 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
         {/* Desktop Navigation & Actions */}
         <div className="hidden sm:flex sm:items-center sm:gap-4">
+          {mounted && (
+            <button
+              type="button"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+              className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-slate-800 bg-slate-900 p-2.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"
+            >
+              {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </button>
+          )}
           <ConnectButton />
         </div>
 
@@ -176,6 +193,22 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
             {/* Drawer Footer info */}
             <div className="border-t border-slate-800 pt-4">
+              {mounted && (
+                <div className="mb-4 flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                    aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+                    className="flex w-full min-h-[48px] items-center justify-center gap-3 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3.5 text-base font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-white"
+                  >
+                    {theme === 'dark' ? (
+                      <><Sun className="h-5 w-5" /><span>Light Mode</span></>
+                    ) : (
+                      <><Moon className="h-5 w-5" /><span>Dark Mode</span></>
+                    )}
+                  </button>
+                </div>
+              )}
               <p className="text-center text-xs text-slate-500">
                 Soroban Resource Analyzer &bull; SoroScope
               </p>
