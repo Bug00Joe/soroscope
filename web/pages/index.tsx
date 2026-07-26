@@ -1,11 +1,12 @@
 import Head from "next/head";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { HeaderNav } from "../components/HeaderNav";
+import { HeaderNav, type NavTab } from "../components/HeaderNav";
 import { ConnectButton } from "../components/ConnectButton";
 import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { FunctionSidebar } from "../components/FunctionSidebar";
+import { TransactionHistoryTable } from "../components/TransactionHistoryTable";
 import { GasUsageChart } from "../components/GasUsageChart";
 import { InvocationHistory } from "../components/InnovocationHistory";
 import { NutritionLabel } from "../components/NutritionLabel";
@@ -19,12 +20,13 @@ import { analyzeService } from "../lib/api";
 import {
   MOCK_CONTRACT_FUNCTIONS,
   generateMockResult,
+  generateMockTransactions,
   type ContractFunction,
   type InvocationResult,
 } from "../lib/sorobantypes";
 
 export default function Home() {
-  const [tab, setTab] = useState<'explorer' | 'history'>('explorer');
+  const [tab, setTab] = useState<NavTab>('explorer');
   const [contractId, setContractId] = useState(
     "CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q",
   );
@@ -35,6 +37,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [wasmData, setWasmData] = useState<string | null>(null);
   const [uploadResetKey, setUploadResetKey] = useState(0);
+  const mockTransactions = useMemo(() => generateMockTransactions(47), []);
 
   useEffect(() => {
     setCurrentResult(null);
@@ -204,6 +207,8 @@ export default function Home() {
                     Run an analysis to see results
                   </p>
                 )
+              ) : tab === 'transactions' ? (
+                <TransactionHistoryTable transactions={mockTransactions} />
               ) : (
                 <InvocationHistory onSelectResult={(result) => {
                   setCurrentResult(result);
