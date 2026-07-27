@@ -48,7 +48,6 @@ use crate::fee_store::FeeStore;
 use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
-use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
@@ -1885,6 +1884,10 @@ async fn main() {
         "SEP-10 server account: {}",
         auth_state.server_stellar_address()
     );
+    // Broadcast channel used to stop all background worker loops on process exit.
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let mut worker_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // ── Multi-node RPC setup ────────────────────────────────────────────
     let providers = build_providers(&config);
     let provider_names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
@@ -1899,14 +1902,14 @@ async fn main() {
 
     // Spawn background health checker.
     let health_interval = std::time::Duration::from_secs(config.health_check_interval_secs);
-    let _health_handle = registry.spawn_health_checker(health_interval);
+    worker_handles.push(registry.spawn_health_checker(health_interval, shutdown_tx.subscribe()));
     tracing::info!(
         interval_secs = config.health_check_interval_secs,
         "Background RPC health checker started"
     );
 
     let gossip_interval = std::time::Duration::from_secs(config.gossip_interval_secs);
-    let _gossip_handle = registry.spawn_gossip_task(gossip_interval);
+    worker_handles.push(registry.spawn_gossip_task(gossip_interval, shutdown_tx.subscribe()));
     tracing::info!(
         interval_secs = config.gossip_interval_secs,
         "Provider gossip sync started"
@@ -1962,9 +1965,10 @@ async fn main() {
     )
     .with_bus(Arc::clone(&simulation_bus));
 
-    tokio::spawn(async move {
-        job_worker.run().await;
-    });
+    let bus_worker_shutdown = shutdown_tx.subscribe();
+    worker_handles.push(tokio::spawn(async move {
+        job_worker.run(bus_worker_shutdown).await;
+    }));
 
     // ── Distributed Job Queue Setup ─────────────────────────────────────
     let job_config = JobQueueConfig {
@@ -1978,7 +1982,7 @@ async fn main() {
         .expect("Failed to initialize JobQueue");
 
     // Spawn background cleanup task
-    job_queue.spawn_cleanup_task();
+    worker_handles.push(job_queue.spawn_cleanup_task(shutdown_tx.subscribe()));
 
     // Spawn worker
     let worker = JobWorker::new(
@@ -1988,9 +1992,10 @@ async fn main() {
         job_config,
     );
 
-    tokio::spawn(async move {
-        worker.run().await;
-    });
+    let worker_shutdown = shutdown_tx.subscribe();
+    worker_handles.push(tokio::spawn(async move {
+        worker.run(worker_shutdown).await;
+    }));
 
     tracing::info!("Job queue and worker started (Redis backend)");
 
@@ -2008,9 +2013,10 @@ async fn main() {
             collector_config,
         ));
 
-        tokio::spawn(async move {
-            collector.run_collection_loop().await;
-        });
+        let fee_shutdown = shutdown_tx.subscribe();
+        worker_handles.push(tokio::spawn(async move {
+            collector.run_collection_loop(fee_shutdown).await;
+        }));
 
         tracing::info!(
             interval_secs = config.fee_collection_interval_secs,
@@ -2020,18 +2026,33 @@ async fn main() {
         // Schedule periodic cleanup of old fee data
         let cleanup_store = Arc::clone(&fee_store);
         let retention_days = config.fee_retention_days;
-        tokio::spawn(async move {
+        let mut retention_shutdown = shutdown_tx.subscribe();
+        worker_handles.push(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
             loop {
-                interval.tick().await;
-                if let Err(e) = cleanup_store
-                    .cleanup_old_samples(retention_days as i32)
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to cleanup old fee samples");
+                tokio::select! {
+                    biased;
+                    _ = retention_shutdown.recv() => {
+                        tracing::info!("Fee retention cleanup task shutting down");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = retention_shutdown.recv() => {
+                                tracing::info!("Fee retention cleanup task shutting down");
+                                break;
+                            }
+                            result = cleanup_store.cleanup_old_samples(retention_days as i32) => {
+                                if let Err(e) = result {
+                                    tracing::error!(error = %e, "Failed to cleanup old fee samples");
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        });
+        }));
     } else {
         tracing::info!("Fee market analysis is disabled");
     }
@@ -2111,8 +2132,66 @@ async fn main() {
     );
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx.clone()))
         .await
         .expect("Server failed to start");
+
+    // After the HTTP server stops, wait for all background worker loops to exit.
+    tracing::info!(
+        workers = worker_handles.len(),
+        "Waiting for background workers to shut down"
+    );
+    join_worker_handles(worker_handles).await;
+    tracing::info!("All background workers stopped");
+}
+
+/// Wait for Ctrl+C / SIGTERM, then broadcast shutdown to all worker loops.
+async fn shutdown_signal(shutdown_tx: tokio::sync::broadcast::Sender<()>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received; notifying background workers");
+    let _ = shutdown_tx.send(());
+}
+
+/// Await every worker handle, aborting any that hang past a short grace period.
+async fn join_worker_handles(handles: Vec<tokio::task::JoinHandle<()>>) {
+    const WORKER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    for handle in handles {
+        let abort = handle.abort_handle();
+        match tokio::time::timeout(WORKER_JOIN_TIMEOUT, handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) if e.is_cancelled() => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "Background worker exited with join error"),
+            Err(_) => {
+                abort.abort();
+                tracing::warn!(
+                    "Background worker did not exit within {:?}; aborted",
+                    WORKER_JOIN_TIMEOUT
+                );
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
