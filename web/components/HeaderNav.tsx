@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from "react";
-import { Menu, X, Layers, History, Activity, List } from "lucide-react";
-import { Menu, X, Layers, History, Activity, Sun, Moon } from "lucide-react";
+import { Menu, X, Layers, History, Activity, List, Sun, Moon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { ConnectButton } from "./ConnectButton";
+import { NetworkSwitcher } from "./NetworkSwitcher";
 
 export type NavTab = "explorer" | "history" | "transactions";
 
@@ -68,6 +68,7 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
         {/* Desktop Navigation & Actions */}
         <div className="hidden sm:flex sm:items-center sm:gap-4">
+          <NetworkSwitcher />
           {mounted && (
             <button
               type="button"
@@ -83,6 +84,7 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
         {/* Mobile Hamburger Button (< 640px) */}
         <div className="flex items-center gap-2 sm:hidden">
+          <NetworkSwitcher />
           <ConnectButton />
           <button
             type="button"
@@ -219,6 +221,9 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
             {/* Drawer Footer info */}
             <div className="border-t border-slate-800 pt-4">
+              <div className="mb-3">
+                <NetworkSwitcher isMobile={true} />
+              </div>
               {mounted && (
                 <div className="mb-4 flex items-center justify-center gap-2">
                   <button

@@ -3,6 +3,7 @@
 import type { InvocationResult } from '../lib/sorobantypes';
 
 import { CallGraphVisualizer } from './CallGraphVisualizer';
+import { CopyButton } from './CopyButton';
 
 interface ResultViewerProps {
   result: InvocationResult | null;
@@ -171,8 +172,10 @@ export function ResultViewer({ result }: ResultViewerProps) {
               overflow: 'auto',
             }}
           >
-            <strong style={{ color: 'var(--text-secondary)' }}>Result:</strong>
-            <br />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <strong style={{ color: 'var(--text-secondary)' }}>Result:</strong>
+              <CopyButton text={JSON.stringify(result.result, null, 2)} label="Copy Result" tooltipPosition="left" />
+            </div>
             {JSON.stringify(result.result, null, 2)}
           </div>
         )
