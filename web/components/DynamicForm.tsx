@@ -7,24 +7,38 @@ import type { ContractFunction, SimulationInputs } from '../lib/sorobantypes';
 import { Loader2 } from 'lucide-react';
 import { validateField } from '../lib/validationSchemas';
 
+import { simulationQueueManager } from '../lib/requestQueue';
+
 interface DynamicFormProps {
   func: ContractFunction;
   onSubmit: (inputs: SimulationInputs) => void;
+  onInputChange?: (inputs: SimulationInputs) => void;
+  liveSimulate?: boolean;
   loading?: boolean;
 }
 
-export function DynamicForm({ func, onSubmit, loading }: DynamicFormProps) {
+export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = false, loading }: DynamicFormProps) {
   const [formData, setFormData] = useState<SimulationInputs>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const handleChange = (name: string, value: string | number | boolean) => {
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    const updatedData = { ...formData, [name]: value };
+    setFormData(updatedData);
     if (errors[name]) {
       setErrors((prev) => {
         const next = { ...prev };
         delete next[name];
         return next;
       });
+    }
+
+    if (onInputChange || liveSimulate) {
+      // Throttle contract simulation on change through client-side simulationQueueManager (max 2/sec)
+      simulationQueueManager.enqueue(async () => {
+        if (onInputChange) {
+          onInputChange(updatedData);
+        }
+      }).catch(() => {});
     }
   };
 

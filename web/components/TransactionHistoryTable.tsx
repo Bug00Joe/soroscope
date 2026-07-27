@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import clsx from 'clsx';
-import { ExternalLink } from 'lucide-react';
+import { ExternalLink, Loader2 } from 'lucide-react';
 import type { TransactionRecord, TransactionStatus } from '../lib/sorobantypes';
 import { paginate } from '../lib/paginationUtils';
 import { CopyButton } from './CopyButton';
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
 const PER_PAGE = 10;
 
@@ -88,18 +89,45 @@ function SkeletonRow() {
 interface TransactionHistoryTableProps {
   transactions: TransactionRecord[];
   loading?: boolean;
+  /** Whether to use Infinite Scroll pagination for event logs (default: true). */
+  enableInfiniteScroll?: boolean;
 }
 
 export function TransactionHistoryTable({
   transactions,
   loading = false,
+  enableInfiniteScroll = true,
 }: TransactionHistoryTableProps) {
   const [page, setPage] = useState(1);
+  const [visibleLimit, setVisibleLimit] = useState(PER_PAGE);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [isInfiniteMode, setIsInfiniteMode] = useState(enableInfiniteScroll);
 
   const { items: pageItems, page: currentPage, totalPages, total } = useMemo(
     () => paginate(transactions, page, PER_PAGE),
     [transactions, page],
   );
+
+  const hasMore = visibleLimit < transactions.length;
+
+  const handleLoadMore = useCallback(() => {
+    if (isFetchingMore || !hasMore) return;
+    setIsFetchingMore(true);
+    setTimeout(() => {
+      setVisibleLimit((prev) => Math.min(transactions.length, prev + PER_PAGE));
+      setIsFetchingMore(false);
+    }, 300);
+  }, [isFetchingMore, hasMore, transactions.length]);
+
+  const sentinelRef = useInfiniteScroll({
+    onLoadMore: handleLoadMore,
+    hasMore: isInfiniteMode && hasMore,
+    isLoading: isFetchingMore,
+  });
+
+  const visibleTransactions = useMemo(() => {
+    return isInfiniteMode ? transactions.slice(0, visibleLimit) : pageItems;
+  }, [isInfiniteMode, transactions, visibleLimit, pageItems]);
 
   const explorerUrl =
     process.env.NEXT_PUBLIC_STELLAR_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
@@ -114,21 +142,30 @@ export function TransactionHistoryTable({
 
   return (
     <div className="rounded-lg border border-[#30363d] bg-[#0d1117]">
-      <div className="flex items-center justify-between border-b border-[#30363d] px-4 py-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#30363d] px-4 py-3">
         <div>
-          <h3 className="text-sm font-semibold text-[#c9d1d9]">Transaction History</h3>
+          <h3 className="text-sm font-semibold text-[#c9d1d9]">Historical Telemetry & Event Logs</h3>
           <p className="mt-0.5 text-xs text-[#8b949e]">
-            Recent contract invocations across all functions.
+            Recent contract invocations and telemetry logs.
           </p>
         </div>
-        <div className="text-xs text-[#8b949e]">
-          {total} transaction{total === 1 ? '' : 's'}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsInfiniteMode((prev) => !prev)}
+            className="text-xs text-[#00d9ff] hover:underline"
+          >
+            {isInfiniteMode ? 'Switch to Paged View' : 'Switch to Infinite Scroll'}
+          </button>
+          <div className="text-xs text-[#8b949e]">
+            {isInfiniteMode ? `${visibleTransactions.length} of ${total}` : total} transaction{total === 1 ? '' : 's'}
+          </div>
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
         <table className="min-w-full text-left text-sm">
-          <thead className="bg-[#161b22] text-xs text-[#8b949e]">
+          <thead className="sticky top-0 z-10 bg-[#161b22] text-xs text-[#8b949e]">
             <tr>
               <th className="px-4 py-3 font-medium">Transaction Hash</th>
               <th className="px-4 py-3 font-medium">Function</th>
@@ -141,7 +178,7 @@ export function TransactionHistoryTable({
           <tbody className="divide-y divide-[#30363d]">
             {loading
               ? Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
-              : pageItems.map((tx) => (
+              : visibleTransactions.map((tx) => (
                   <tr key={tx.hash} className="hover:bg-[#0f1621]">
                     <td className="max-w-[220px] px-4 py-3">
                       <div className="flex items-center gap-1.5">
@@ -174,11 +211,28 @@ export function TransactionHistoryTable({
                     </td>
                   </tr>
                 ))}
+
+            {isInfiniteMode && (
+              <tr ref={sentinelRef} className="border-t-0">
+                <td colSpan={6} className="py-4 text-center">
+                  {isFetchingMore ? (
+                    <div className="inline-flex items-center gap-2 text-xs text-[#8b949e]">
+                      <Loader2 className="h-4 w-4 animate-spin text-[#00d9ff]" />
+                      Fetching older telemetry event logs...
+                    </div>
+                  ) : hasMore ? (
+                    <div className="text-xs text-[#8b949e]">Scroll down to load more logs</div>
+                  ) : (
+                    <div className="text-xs text-[#8b949e]">All telemetry event logs loaded ({total} total)</div>
+                  )}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
 
-      {totalPages > 1 && (
+      {!isInfiniteMode && totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-[#30363d] px-4 py-3">
           <div className="text-xs text-[#8b949e]">
             Page {currentPage} of {totalPages}

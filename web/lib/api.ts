@@ -163,12 +163,19 @@ export interface AnalyzeWasmRequest {
   enable_experimental?: boolean;
 }
 
+import { simulationQueueManager } from './requestQueue';
+
 export const analyzeService = {
   analyze(req: AnalyzeRequest, token?: string): Promise<AnalyzeResponse> {
-    return apiClient.post<AnalyzeResponse>('/analyze', req, { token });
+    return simulationQueueManager.enqueue(() =>
+      apiClient.post<AnalyzeResponse>('/analyze', req, { token }),
+    );
   },
 
   analyzeWasm(req: AnalyzeWasmRequest, token?: string): Promise<AnalyzeResponse> {
-    return apiClient.post<AnalyzeResponse>('/analyze/wasm', req, { token });
+    return simulationQueueManager.enqueue(() =>
+      apiClient.post<AnalyzeResponse>('/analyze/wasm', req, { token }),
+    );
   },
 };
+
