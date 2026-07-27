@@ -5,6 +5,7 @@ import clsx from 'clsx';
 import { ExternalLink } from 'lucide-react';
 import type { TransactionRecord, TransactionStatus } from '../lib/sorobantypes';
 import { paginate } from '../lib/paginationUtils';
+import { CopyButton } from './CopyButton';
 
 const PER_PAGE = 10;
 
@@ -142,10 +143,13 @@ export function TransactionHistoryTable({
               ? Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
               : pageItems.map((tx) => (
                   <tr key={tx.hash} className="hover:bg-[#0f1621]">
-                    <td className="max-w-[200px] px-4 py-3">
-                      <span className="block truncate font-mono text-xs text-[#c9d1d9]" title={tx.hash}>
-                        {tx.hash}
-                      </span>
+                    <td className="max-w-[220px] px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="block truncate font-mono text-xs text-[#c9d1d9]" title={tx.hash}>
+                          {tx.hash}
+                        </span>
+                        <CopyButton text={tx.hash} variant="icon" iconSize={13} tooltipPosition="right" />
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <span className="font-medium text-[#c9d1d9]">{tx.functionName}</span>

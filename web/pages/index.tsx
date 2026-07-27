@@ -15,6 +15,8 @@ import { ResourceHeatmap } from "../components/ResourceHeatmap";
 import { ResultViewer } from "../components/Resultviewer";
 import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
 import { UploadZone } from "../components/upload-zone";
+import { CopyButton } from "../components/CopyButton";
+import { useNetwork } from "../context/NetworkContext";
 import { clearLatestAnalysis } from "../lib/analysisStorage";
 import { analyzeService } from "../lib/api";
 import {
@@ -26,10 +28,9 @@ import {
 } from "../lib/sorobantypes";
 
 export default function Home() {
+  const { network } = useNetwork();
   const [tab, setTab] = useState<NavTab>('explorer');
-  const [contractId, setContractId] = useState(
-    "CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q",
-  );
+  const [contractId, setContractId] = useState(network.defaultContractId);
   const [selectedFunction, setSelectedFunction] = useState<ContractFunction>(
     MOCK_CONTRACT_FUNCTIONS[0],
   );
@@ -38,6 +39,10 @@ export default function Home() {
   const [wasmData, setWasmData] = useState<string | null>(null);
   const [uploadResetKey, setUploadResetKey] = useState(0);
   const mockTransactions = useMemo(() => generateMockTransactions(47), []);
+
+  useEffect(() => {
+    setContractId(network.defaultContractId);
+  }, [network]);
 
   useEffect(() => {
     setCurrentResult(null);
@@ -133,13 +138,16 @@ export default function Home() {
                 }}
               />
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-                <label className="mb-2 block text-sm font-medium text-slate-300">
-                  Contract ID
-                </label>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-300">
+                    Contract ID
+                  </label>
+                  <CopyButton text={contractId} label="Copy ID" tooltipPosition="left" />
+                </div>
                 <input
                   value={contractId}
                   onChange={(e) => setContractId(e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
                 />
               </div>
               <ContractInteraction
