@@ -16,6 +16,7 @@ import { ResultViewer } from "../components/Resultviewer";
 import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
 import { UploadZone } from "../components/upload-zone";
 import { CopyButton } from "../components/CopyButton";
+import { WalletBalanceCard } from "../components/WalletBalanceCard";
 import { useNetwork } from "../context/NetworkContext";
 import { clearLatestAnalysis } from "../lib/analysisStorage";
 import { analyzeService } from "../lib/api";
@@ -129,6 +130,7 @@ export default function Home() {
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div className="space-y-4">
+              <WalletBalanceCard />
               <FunctionSidebar
                 functions={MOCK_CONTRACT_FUNCTIONS}
                 selectedFunction={selectedFunction}

@@ -2406,7 +2406,31 @@ impl LiquidityPool {
         let denominator = (reserve_out - out)
             .checked_mul(fee_scale)
             .ok_or(Error::InsufficientLiquidity)?;
-        let amount_in = (numerator / denominator) + 1;
+
+        // Constant-product invariant preservation.
+        //
+        // The required input is `numerator / denominator`, but integer division
+        // truncates toward zero. The previous implementation used
+        // `numerator / denominator + 1`, which unconditionally adds a whole unit
+        // — even when the division is already exact. That systematically
+        // over-charges the trader by one base unit on every exact-division swap,
+        // leaking value into the pool and breaking round-trip price parity
+        // (a swap followed by its inverse no longer returns the original amount).
+        //
+        // The correct rule is ceiling division: charge the *smallest* integer
+        // input that still keeps `k' = new_reserve_in * new_reserve_out` at or
+        // above the old invariant `k`. When the division is exact the ceiling is
+        // the quotient itself (no surcharge); otherwise it rounds up by one unit,
+        // rounding in the pool's favour just enough to cover the truncated
+        // remainder. This matches Uniswap-v2's `getAmountIn` semantics.
+        if denominator <= 0 {
+            return Err(Error::InsufficientLiquidity);
+        }
+        let amount_in = if numerator % denominator == 0 {
+            numerator / denominator
+        } else {
+            numerator / denominator + 1
+        };
 
         if amount_in > in_max {
             return Err(Error::SlippageExceeded);
