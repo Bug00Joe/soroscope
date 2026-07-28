@@ -13,7 +13,13 @@ pub enum Error {
     LengthMismatch = 2,
     InvalidAmount = 3,
     InsufficientBalance = 4,
+    TooManyRecipients = 5,
 }
+
+/// Upper bound on recipients per batch. Oversized recipient vectors are
+/// rejected before any iteration so a caller cannot exhaust the
+/// transaction's CPU instruction budget by passing an unbounded batch.
+const MAX_RECIPIENTS: u32 = 100;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,12 +57,14 @@ fn validate_lengths(recipients: &Vec<Address>, amounts: &Vec<i128>) -> Result<u3
     if len == 0 {
         return Err(Error::EmptyBatch);
     }
+    if len > MAX_RECIPIENTS {
+        return Err(Error::TooManyRecipients);
+    }
     if len != amounts.len() {
         return Err(Error::LengthMismatch);
     }
     Ok(len)
 }
-
 fn simulate_batch(
     env: &Env,
     token: &Address,
