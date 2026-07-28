@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod comparison;
+pub mod cors;
 pub mod errors;
 pub mod gas_golfing;
 pub mod insights;

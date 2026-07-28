@@ -51,7 +51,6 @@ use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
-use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use utoipa::{OpenApi, ToSchema};
@@ -137,6 +136,10 @@ struct AppConfig {
     /// L2 treats it as stale. Default 100 ≈ 8 minutes at 5 s/ledger.
     #[serde(default = "default_max_ledger_age")]
     max_ledger_age: u32,
+    /// Comma-separated list of origins the CORS layer allows on the public
+    /// API routes (issue #670). Empty means any origin — development fallback.
+    #[serde(default)]
+    cors_allowed_origins: String,
 }
 
 fn default_health_check_interval() -> u64 {
@@ -220,6 +223,7 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("emergency_verification_paused", false)?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
+        .set_default("cors_allowed_origins", "")?
         .build()?;
 
     settings.try_deserialize()
@@ -2055,7 +2059,7 @@ async fn main() {
         simulation_bus,
     });
 
-    let cors = CorsLayer::new().allow_origin(Any);
+    let cors = soroscope_core::cors::build_cors_layer(&config.cors_allowed_origins);
 
     let protected = Router::new()
         .route("/analyze", post(analyze))

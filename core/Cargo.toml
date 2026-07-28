@@ -57,3 +57,4 @@ rayon = "1.8"
 
 [dev-dependencies]
 proptest = "1.4.0"
+tower = { version = "0.4", features = ["util"] }
