@@ -342,6 +342,12 @@ pub enum DataKey {
     Balance(Address),
     /// ERC-20-style allowances (persistent storage).
     Allowance(AllowanceDataKey),
+    /// LP fee in basis points (charged on deposit/withdrawal)
+    LpFeeBps,
+    Admin,
+    Guard,
+    Oracle,
+    PendingFeeUpdate,
 }
 
 fn load_pool(e: &Env) -> Result<PoolState, Error> {
