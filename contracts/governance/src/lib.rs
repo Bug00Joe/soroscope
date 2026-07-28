@@ -24,6 +24,9 @@ pub enum Error {
     IdentityRequired = 10,
     IdentityAlreadyClaimed = 11,
     VoteSideMismatch = 12,
+    NotSecurityCouncil = 13,
+    CannotVeto = 14,
+    SecurityCouncilNotSet = 15,
 }
 
 #[contracttype]
