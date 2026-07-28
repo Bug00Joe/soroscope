@@ -17,6 +17,7 @@ import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
 import { UploadZone } from "../components/upload-zone";
 import { CopyButton } from "../components/CopyButton";
 import { LiquidityPoolAnalytics } from "../components/LiquidityPoolAnalytics";
+import { TransactionConfetti } from "../components/TransactionConfetti";
 import { useNetwork } from "../context/NetworkContext";
 import { clearLatestAnalysis } from "../lib/analysisStorage";
 import { analyzeService } from "../lib/api";
@@ -78,6 +79,9 @@ export default function Home() {
       };
 
       setCurrentResult(result);
+      if (typeof window !== 'undefined' && (window as any).triggerConfetti) {
+        (window as any).triggerConfetti();
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Analysis failed";
       setCurrentResult({
@@ -229,6 +233,7 @@ export default function Home() {
             </div>
           </div>
         </section>
+        <TransactionConfetti />
       </main>
     </>
   );

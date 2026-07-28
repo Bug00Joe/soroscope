@@ -273,6 +273,9 @@ export function UploadZone({
 
             await response.json();
             setUploadState('success');
+            if (typeof window !== 'undefined' && (window as any).triggerConfetti) {
+              (window as any).triggerConfetti();
+            }
             onFileReady?.(file);
             resolve(true);
           } catch (error) {
