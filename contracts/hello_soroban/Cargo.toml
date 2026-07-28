@@ -1,5 +1,5 @@
 [package]
-name = "hello-soroban"
+name = "hello_soroban"
 version = "0.1.0"
 edition = "2021"
 
