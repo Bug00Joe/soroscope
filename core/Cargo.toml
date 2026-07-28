@@ -3,6 +3,10 @@ name = "soroscope-core"
 version = "0.1.0"
 edition = "2021"
 
+# The root workspace only lists the contract crates as members, so opt out
+# explicitly — without this, cargo refuses to build the package at all.
+[workspace]
+
 [lib]
 name = "soroscope_core"
 path = "src/lib.rs"

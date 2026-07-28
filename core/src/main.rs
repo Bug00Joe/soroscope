@@ -48,7 +48,6 @@ use crate::fee_store::FeeStore;
 use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
-use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
@@ -880,14 +879,12 @@ async fn analyze(
                 tracing::warn!("No ledger entries available for Merkle tree generation");
                 None
             } else {
-                let mut tree = MerkleTree::new(256);
                 let mut tree = MerkleTree::new(32);
                 if let Err(e) = tree.build(leaves) {
                     tracing::error!("Failed to generate Merkle tree: {}", e);
                     None
                 } else {
                     tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
-                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count());
                     Some(tree.get_root_hex())
                 }
             }

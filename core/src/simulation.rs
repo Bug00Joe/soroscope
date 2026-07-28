@@ -3160,6 +3160,7 @@ pub fn profile_contract_with_flamegraph(
     function_name: String,
     args: Vec<String>,
 ) -> Result<(SorobanResources, ProfileResult), SimulationError> {
+    use soroban_sdk::testutils::Ledger;
     use soroban_sdk::{Env, Symbol, Val};
     use std::time::Instant;
 
@@ -4399,6 +4400,7 @@ mod tests {
     }
     #[test]
     fn test_debug_soroban_wasm_counter() {
+        use soroban_sdk::testutils::Ledger;
         use soroban_sdk::{Env, Symbol, Val};
         let wasm = soroban_wasm();
         let instr = WasmInstrumenter::new(&wasm).expect("parse ok");
