@@ -107,14 +107,37 @@ export default function Home() {
 
   const analysisReport = currentResult?.analysisReport;
 
+  const { pageTitle, seoDescription } = useMemo(() => {
+    switch (tab) {
+      case 'analytics':
+        return {
+          pageTitle: 'SoroScope | Liquidity Pool APY & TVL Analytics',
+          seoDescription: 'Explore historical APY, TVL, and volume charts for the XLM/USDC liquidity pool.',
+        };
+      case 'transactions':
+        return {
+          pageTitle: 'SoroScope | Transaction History Telemetry',
+          seoDescription: 'Monitor real-time Soroban contract events, transaction fees, and telemetry records.',
+        };
+      case 'history':
+        return {
+          pageTitle: 'SoroScope | Invocation History Analysis',
+          seoDescription: 'Review previous Soroban contract runs and CPU/RAM instruction summaries.',
+        };
+      case 'explorer':
+      default:
+        return {
+          pageTitle: `SoroScope | ${selectedFunction.name} - Contract Analyzer`,
+          seoDescription: `Analyze CPU, RAM, and ledger footprint of the ${selectedFunction.name} function on contract ${contractId}.`,
+        };
+    }
+  }, [tab, selectedFunction.name, contractId]);
+
   return (
     <>
       <Head>
-        <title>SoroScope - Soroban Smart Contract Resource Analyzer</title>
-        <meta
-          name="description"
-          content="Explore, test, and analyze the CPU, RAM, and ledger footprint of Soroban smart contracts."
-        />
+        <title>{pageTitle}</title>
+        <meta name="description" content={seoDescription} />
       </Head>
       <main className="min-h-screen bg-slate-950 text-slate-100">
         <HeaderNav tab={tab} setTab={setTab} />
