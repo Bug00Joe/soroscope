@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import clsx from 'clsx';
-import { ExternalLink, Loader2 } from 'lucide-react';
+import { ExternalLink, Loader2, Search } from 'lucide-react';
 import type { TransactionRecord, TransactionStatus } from '../lib/sorobantypes';
 import { paginate } from '../lib/paginationUtils';
+import { DEFAULT_TRANSACTION_FILTER, filterTransactions, type TransactionFilter } from '../lib/transactionFilters';
 import { CopyButton } from './CopyButton';
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
@@ -91,33 +92,55 @@ interface TransactionHistoryTableProps {
   loading?: boolean;
   /** Whether to use Infinite Scroll pagination for event logs (default: true). */
   enableInfiniteScroll?: boolean;
+  /** Active status/function-name filter. Must be memoized by the caller (e.g. via useMemo). */
+  filter?: TransactionFilter;
+  /** Called when the status filter changes. Should be memoized by the caller (e.g. via useCallback). */
+  onStatusFilterChange?: (status: TransactionStatus | 'all') => void;
+  /** Called when the function-name filter changes. Should be memoized by the caller (e.g. via useCallback). */
+  onFunctionFilterChange?: (functionName: string) => void;
 }
 
 export function TransactionHistoryTable({
   transactions,
   loading = false,
   enableInfiniteScroll = true,
+  filter = DEFAULT_TRANSACTION_FILTER,
+  onStatusFilterChange,
+  onFunctionFilterChange,
 }: TransactionHistoryTableProps) {
   const [page, setPage] = useState(1);
   const [visibleLimit, setVisibleLimit] = useState(PER_PAGE);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [isInfiniteMode, setIsInfiniteMode] = useState(enableInfiniteScroll);
 
-  const { items: pageItems, page: currentPage, totalPages, total } = useMemo(
-    () => paginate(transactions, page, PER_PAGE),
-    [transactions, page],
+  const filteredTransactions = useMemo(
+    () => filterTransactions(transactions, filter),
+    [transactions, filter],
   );
 
-  const hasMore = visibleLimit < transactions.length;
+  // Jump back to the first page/batch whenever the filter itself changes.
+  // Relies on `filter` being a stable (memoized) reference from the parent —
+  // otherwise a new object on every render would re-trigger this on every render too.
+  useEffect(() => {
+    setPage(1);
+    setVisibleLimit(PER_PAGE);
+  }, [filter]);
+
+  const { items: pageItems, page: currentPage, totalPages, total } = useMemo(
+    () => paginate(filteredTransactions, page, PER_PAGE),
+    [filteredTransactions, page],
+  );
+
+  const hasMore = visibleLimit < filteredTransactions.length;
 
   const handleLoadMore = useCallback(() => {
     if (isFetchingMore || !hasMore) return;
     setIsFetchingMore(true);
     setTimeout(() => {
-      setVisibleLimit((prev) => Math.min(transactions.length, prev + PER_PAGE));
+      setVisibleLimit((prev) => Math.min(filteredTransactions.length, prev + PER_PAGE));
       setIsFetchingMore(false);
     }, 300);
-  }, [isFetchingMore, hasMore, transactions.length]);
+  }, [isFetchingMore, hasMore, filteredTransactions.length]);
 
   const sentinelRef = useInfiniteScroll({
     onLoadMore: handleLoadMore,
@@ -126,11 +149,40 @@ export function TransactionHistoryTable({
   });
 
   const visibleTransactions = useMemo(() => {
-    return isInfiniteMode ? transactions.slice(0, visibleLimit) : pageItems;
-  }, [isInfiniteMode, transactions, visibleLimit, pageItems]);
+    return isInfiniteMode ? filteredTransactions.slice(0, visibleLimit) : pageItems;
+  }, [isInfiniteMode, filteredTransactions, visibleLimit, pageItems]);
 
   const explorerUrl =
     process.env.NEXT_PUBLIC_STELLAR_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
+
+  const hasActiveFilter = filter.status !== 'all' || filter.functionName.trim().length > 0;
+
+  const filterControls = (onStatusFilterChange || onFunctionFilterChange) && (
+    <div className="flex flex-col gap-2 border-b border-[#30363d] px-4 py-3 sm:flex-row sm:items-center">
+      <div className="relative flex-1">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#8b949e]" />
+        <input
+          type="text"
+          value={filter.functionName}
+          onChange={(e) => onFunctionFilterChange?.(e.target.value)}
+          placeholder="Filter by function name..."
+          aria-label="Filter by function name"
+          className="w-full rounded border border-[#30363d] bg-[#161b22] py-1.5 pl-8 pr-2 text-xs text-[#c9d1d9] placeholder:text-[#6e7681] focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+        />
+      </div>
+      <select
+        value={filter.status}
+        onChange={(e) => onStatusFilterChange?.(e.target.value as TransactionStatus | 'all')}
+        aria-label="Filter by status"
+        className="rounded border border-[#30363d] bg-[#161b22] px-2 py-1.5 text-xs text-[#c9d1d9] focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+      >
+        <option value="all">All statuses</option>
+        <option value="success">Success</option>
+        <option value="failed">Failed</option>
+        <option value="pending">Pending</option>
+      </select>
+    </div>
+  );
 
   if (!loading && transactions.length === 0) {
     return (
@@ -163,6 +215,8 @@ export function TransactionHistoryTable({
         </div>
       </div>
 
+      {filterControls}
+
       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
         <table className="min-w-full text-left text-sm">
           <thead className="sticky top-0 z-10 bg-[#161b22] text-xs text-[#8b949e]">
@@ -176,7 +230,13 @@ export function TransactionHistoryTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-[#30363d]">
-            {loading
+            {!loading && hasActiveFilter && filteredTransactions.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-sm text-[#8b949e]">
+                  No transactions match the current filters.
+                </td>
+              </tr>
+            ) : loading
               ? Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
               : visibleTransactions.map((tx) => (
                   <tr key={tx.hash} className="hover:bg-[#0f1621]">

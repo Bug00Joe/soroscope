@@ -25,7 +25,9 @@ import {
   generateMockTransactions,
   type ContractFunction,
   type InvocationResult,
+  type TransactionStatus,
 } from "../lib/sorobantypes";
+import { DEFAULT_TRANSACTION_FILTER, type TransactionFilter } from "../lib/transactionFilters";
 
 export default function Home() {
   const { network } = useNetwork();
@@ -39,6 +41,26 @@ export default function Home() {
   const [wasmData, setWasmData] = useState<string | null>(null);
   const [uploadResetKey, setUploadResetKey] = useState(0);
   const mockTransactions = useMemo(() => generateMockTransactions(47), []);
+
+  const [transactionStatusFilter, setTransactionStatusFilter] = useState<TransactionStatus | 'all'>(
+    DEFAULT_TRANSACTION_FILTER.status,
+  );
+  const [transactionFunctionFilter, setTransactionFunctionFilter] = useState(
+    DEFAULT_TRANSACTION_FILTER.functionName,
+  );
+
+  const transactionFilter: TransactionFilter = useMemo(
+    () => ({ status: transactionStatusFilter, functionName: transactionFunctionFilter }),
+    [transactionStatusFilter, transactionFunctionFilter],
+  );
+
+  const handleTransactionStatusFilterChange = useCallback((status: TransactionStatus | 'all') => {
+    setTransactionStatusFilter(status);
+  }, []);
+
+  const handleTransactionFunctionFilterChange = useCallback((functionName: string) => {
+    setTransactionFunctionFilter(functionName);
+  }, []);
 
   useEffect(() => {
     setContractId(network.defaultContractId);
@@ -216,7 +238,12 @@ export default function Home() {
                   </p>
                 )
               ) : tab === 'transactions' ? (
-                <TransactionHistoryTable transactions={mockTransactions} />
+                <TransactionHistoryTable
+                  transactions={mockTransactions}
+                  filter={transactionFilter}
+                  onStatusFilterChange={handleTransactionStatusFilterChange}
+                  onFunctionFilterChange={handleTransactionFunctionFilterChange}
+                />
               ) : (
                 <InvocationHistory onSelectResult={(result) => {
                   setCurrentResult(result);
