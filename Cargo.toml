@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "contracts/crucible-example-gasless",
     "contracts/error_codes",
     "contracts/liquidity_pool",
     "contracts/math",
