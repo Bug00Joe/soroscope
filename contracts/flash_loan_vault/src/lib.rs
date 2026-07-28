@@ -188,9 +188,14 @@ pub struct BorrowRecord {
 }
 
 /// Helper: calculate fee for a given amount using configured bps.
+/// Uses ceiling division when fee_bps > 0 to prevent fee evasion on small amounts.
 fn calculate_fee(e: &Env, amount: i128) -> i128 {
     let fee_bps = get_fee_bps(e);
-    amount * fee_bps / 10_000
+    if fee_bps == 0 || amount <= 0 {
+        0
+    } else {
+        (amount * fee_bps + 9_999) / 10_000
+    }
 }
 
 fn is_flash_loan_active(e: &Env) -> bool {
@@ -454,9 +459,8 @@ impl FlashLoanVault {
             return Err(Error::InsufficientVaultBalance);
         }
 
-        // 6. Calculate fee.
-        let fee_bps = get_fee_bps(&e);
-        let fee = amount * fee_bps / 10_000;
+        // 6. Calculate fee using configured basis points with ceiling division.
+        let fee = calculate_fee(&e, amount);
 
         // 7. Set reentrancy guard.
         set_flash_loan_active(&e, true);
@@ -469,9 +473,10 @@ impl FlashLoanVault {
         receiver_client.execute_operation(&token_addr, &amount, &fee, &initiator);
 
         // 10. Verify repayment: after lending `amount`, the receiver must
-        // return `amount + fee`, leaving the vault with its original balance
-        // plus the fee.
-        let required_balance = pre_balance + fee;
+        // return `amount + fee`, leaving the vault contract address with its original balance
+        // plus the dynamically verified fee.
+        let expected_fee = calculate_fee(&e, amount);
+        let required_balance = pre_balance + expected_fee;
         let post_balance = token.balance(&e.current_contract_address());
         if post_balance < required_balance {
             // The transfer at step 8 is rolled back — funds are safe.
@@ -555,11 +560,16 @@ impl FlashLoanVault {
         let receiver_client = FlashLoanReceiverClient::new(&e, &borrower);
         receiver_client.execute_operation(&token_addr, &amount, &fee, &borrower);
 
-        // 9. Verify repayment: vault balance must be >= pre_balance + fee.
+        // 9. Verify repayment: vault balance must be >= pre_balance + expected_fee.
+        let expected_fee = calculate_fee(&e, amount);
+        let required_balance = pre_balance + expected_fee;
         let post_balance = token.balance(&e.current_contract_address());
-        if post_balance < pre_balance + fee {
-            // Revert with a clear error.
-            panic!("borrow not repaid");
+        if post_balance < required_balance {
+            set_flash_loan_active(&e, false);
+            e.storage()
+                .instance()
+                .remove(&DataKey::BorrowRecord(borrower));
+            return Err(Error::LoanNotRepaid);
         }
 
         // 10. Clear reentrancy guard and borrow record.
