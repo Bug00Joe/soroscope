@@ -226,3 +226,74 @@ pool.initialize(admin, token_a, token_b)?;
 ## Fee admin
 
 `DataKey::Admin` is the pool fee admin (may differ from guard admins after rotation). Use `set_fee`, `configure_fee_oracle`, `sync_fee_from_oracle`, and `execute_fee_update`.
+
+## Swapping and slippage protection
+
+The pool exposes both swap directions. Which one you use decides which side you
+can bound, and every swap needs one side bounded — an unbounded swap can be
+sandwiched, since an attacker who front-runs the transaction moves the price so
+the same trade fills far worse.
+
+| Function | You fix | You bound | Returns |
+|----------|---------|-----------|---------|
+| `swap(to, buy_a, out, in_max)` | the output `out` | the input, via `in_max` | input actually paid |
+| `swap_exact_in(to, buy_a, amount_in, min_amount_out)` | the input `amount_in` | the output, via `min_amount_out` | output actually delivered |
+
+`buy_a` selects direction: `true` sends token B in and takes token A out, `false`
+is the reverse.
+
+### Exact-input swaps
+
+`swap_exact_in` computes the output from the live reserves and current fee, then
+refuses the trade unless it clears the caller's floor:
+
+```rust
+// Quote against current state, then accept 1% of drift.
+let quoted = pool.get_amount_out(false, 1_000)?;
+let min_amount_out = quoted * 99 / 100;
+
+let received = pool.swap_exact_in(trader, false, 1_000, min_amount_out)?;
+assert!(received >= min_amount_out);
+```
+
+If the price moves between the quote and execution such that the output would
+fall below `min_amount_out`, the call returns `Error::SlippageExceeded` and no
+tokens move.
+
+Passing `min_amount_out = 0` disables the check. Do that only when any fill is
+genuinely acceptable.
+
+### Quoting
+
+```rust
+let out = pool.get_amount_out(buy_a, amount_in)?;  // output for a given input
+let needed = pool.get_amount_in(buy_a, amount_out)?; // input for a given output
+let (reserve_a, reserve_b) = pool.get_reserves()?;
+```
+
+Both quotes are read-only and only describe the state they were read from. Derive
+a bound from them; do not assume the swap will match them. Rounding always
+resolves in the pool's favour, so `get_amount_in(get_amount_out(x))` may come
+back slightly above `x`.
+
+### Exact-output swaps
+
+For `swap`, the output is fixed by the caller and delivered exactly or not at
+all, so `in_max` is the meaningful bound — a minimum-output parameter would be
+satisfied by construction. Set `in_max` to the quoted input plus your tolerance:
+
+```rust
+let quoted_in = pool.get_amount_in(false, 900)?;
+pool.swap(trader, false, 900, quoted_in * 101 / 100)?;
+```
+
+### Swap errors
+
+- `Error::SlippageExceeded`: the bound you set was not met (`min_amount_out` for
+  `swap_exact_in`, `in_max` for `swap`). Expected under normal price movement;
+  re-quote and retry.
+- `Error::InvalidAmount`: `amount_in` was zero or negative, or `min_amount_out`
+  was negative.
+- `Error::InsufficientLiquidity`: the reserves cannot support the trade, or the
+  input was too small to buy a single unit of output.
+- `Error::Paused`: swaps are currently paused by the guard.
