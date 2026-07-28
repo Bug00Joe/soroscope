@@ -16,6 +16,7 @@ import { ResultViewer } from "../components/Resultviewer";
 import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
 import { UploadZone } from "../components/upload-zone";
 import { CopyButton } from "../components/CopyButton";
+import { LiquidityPoolAnalytics } from "../components/LiquidityPoolAnalytics";
 import { useNetwork } from "../context/NetworkContext";
 import { clearLatestAnalysis } from "../lib/analysisStorage";
 import { analyzeService } from "../lib/api";
@@ -217,6 +218,8 @@ export default function Home() {
                 )
               ) : tab === 'transactions' ? (
                 <TransactionHistoryTable transactions={mockTransactions} />
+              ) : tab === 'analytics' ? (
+                <LiquidityPoolAnalytics />
               ) : (
                 <InvocationHistory onSelectResult={(result) => {
                   setCurrentResult(result);

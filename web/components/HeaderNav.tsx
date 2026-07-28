@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Menu, X, Layers, History, Activity, List, Sun, Moon } from "lucide-react";
+import { Menu, X, Layers, History, Activity, List, Sun, Moon, TrendingUp } from "lucide-react";
 import { useTheme } from "next-themes";
 import { ConnectButton } from "./ConnectButton";
 import { NetworkSwitcher } from "./NetworkSwitcher";
 
-export type NavTab = "explorer" | "history" | "transactions";
+export type NavTab = "explorer" | "history" | "transactions" | "analytics";
 
 interface HeaderNavProps {
   tab: NavTab;
@@ -137,6 +137,18 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
           >
             <List className="h-4 w-4" />
             Transactions
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("analytics")}
+            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
+              tab === "analytics"
+                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
+                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+            }`}
+          >
+            <TrendingUp className="h-4 w-4" />
+            LP Analytics
           </button>
         </div>
       </div>
