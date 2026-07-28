@@ -26,6 +26,19 @@ fn setup(threshold: u32, n_admins: u32) -> (Env, EmergencyGuardClient<'static>, 
     (env, client, std_admins)
 }
 
+fn setup_with_roles(
+    threshold: u32,
+    admins: Vec<Address>,
+    guardians: Vec<Address>,
+) -> (Env, EmergencyGuardClient<'static>) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(EmergencyGuard, ());
+    let client = EmergencyGuardClient::new(&env, &contract_id);
+    client.initialize_with_roles(&admins, &guardians, &threshold);
+    (env, client)
+}
+
 #[test]
 fn test_granular_pause_types() {
     let mut pause = PauseType::new(0);
@@ -152,6 +165,21 @@ fn test_initialize_stores_admins_and_threshold() {
 }
 
 #[test]
+fn test_initialize_with_distinct_guardians_and_admins() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(EmergencyGuard, ());
+    let client = EmergencyGuardClient::new(&env, &contract_id);
+    let admins = vec![&env, Address::generate(&env), Address::generate(&env)];
+    let guardians = vec![&env, Address::generate(&env)];
+    client.initialize_with_roles(&admins, &guardians, &1);
+
+    assert!(client.is_admin(&admins.get(0).unwrap()));
+    assert!(client.is_guardian(&guardians.get(0).unwrap()));
+    assert!(!client.is_guardian(&admins.get(0).unwrap()));
+}
+
+#[test]
 fn test_initialize_rejects_zero_threshold() {
     let env = Env::default();
     env.mock_all_auths();
@@ -181,6 +209,48 @@ fn test_initialize_cannot_be_called_twice() {
 }
 
 // â”€â”€â”€ Admin rotation: add_admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+#[test]
+fn test_guardian_can_pause_but_admin_cannot_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(EmergencyGuard, ());
+    let client = EmergencyGuardClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let admins = vec![&env, admin.clone()];
+    let guardians = vec![&env, guardian.clone()];
+    client.initialize_with_roles(&admins, &guardians, &1);
+
+    client.set_pause(&guardian, &PauseType::SWAP, &true);
+    assert!(client.is_paused(&PauseType::SWAP));
+
+    let result = client.try_set_pause(&admin, &PauseType::DEPOSIT, &true);
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
+}
+
+#[test]
+fn test_admin_can_resume_but_guardian_cannot_resume() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(EmergencyGuard, ());
+    let client = EmergencyGuardClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let admins = vec![&env, admin.clone()];
+    let guardians = vec![&env, guardian.clone()];
+    client.initialize_with_roles(&admins, &guardians, &1);
+
+    let guardians_vec = vec![&env, guardian.clone()];
+    client.emergency_pause(&guardians_vec);
+    assert!(client.is_paused(&PauseType::SWAP));
+
+    let result = client.try_resume(&vec![&env, guardian.clone()]);
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
+
+    client.resume(&vec![&env, admin.clone()]);
+    assert!(!client.is_paused(&PauseType::SWAP));
+}
 
 #[test]
 fn test_add_admin_with_sufficient_approvers() {
