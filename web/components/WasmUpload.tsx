@@ -36,10 +36,16 @@ interface WasmFile {
   simulationResult?: unknown;
 }
 
+// Maximum allowed WASM file size (2 MB) — enforced on both client and server.
+const MAX_WASM_SIZE = 2 * 1024 * 1024; // 2 MB
+
+// WASM magic-number: the four bytes \0asm (0x00 0x61 0x73 0x6D).
+const WASM_MAGIC = 0x0061736d;
+
 interface WasmUploadProps {
   onUploadComplete?: (files: WasmFile[]) => void;
   onFileSelect?: (files: File[]) => void;
-  maxFileSize?: number; // in bytes, default 10MB
+  maxFileSize?: number; // in bytes, default 2 MB
   maxFiles?: number;
   className?: string;
 }
@@ -75,26 +81,49 @@ const generateHash = async (file: File): Promise<string> => {
 export default function WasmUpload({
   onUploadComplete,
   onFileSelect,
-  maxFileSize = 10 * 1024 * 1024,
+  maxFileSize = MAX_WASM_SIZE,
   maxFiles = 5,
   className,
 }: WasmUploadProps) {
   const [files, setFiles] = useState<WasmFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
 
-  //validate WASM file
+  //validate WASM file (synchronous checks: extension, size, empty)
   const validateWasm = useCallback((file: File): string | null => {
     if (!file.name.toLowerCase().endsWith(".wasm")) {
       return "Validation Error: File must be a .wasm file";
     }
     if (file.size > maxFileSize) {
-      return `File too large (max ${(maxFileSize / 1024 / 1024).toFixed(1)}MB)`;
+      return `File too large: ${(file.size / 1024 / 1024).toFixed(2)} MB exceeds the ${(maxFileSize / 1024 / 1024).toFixed(0)} MB limit`;
     }
     if (file.size === 0) {
       return "File is empty";
     }
     return null;
   }, [maxFileSize]);
+
+  // Async magic-bytes check: reads the first 8 bytes and verifies \0asm + version 1.
+  const validateWasmMagic = useCallback(async (file: File): Promise<string | null> => {
+    try {
+      const headerSlice = file.slice(0, 8);
+      const buffer = await headerSlice.arrayBuffer();
+      if (buffer.byteLength < 8) {
+        return "File is too small to be a valid WebAssembly module";
+      }
+      const view = new DataView(buffer);
+      const magic = view.getUint32(0, false); // big-endian: \0asm
+      if (magic !== WASM_MAGIC) {
+        return "Invalid WASM magic bytes — file does not start with \\0asm. Ensure you uploaded a compiled Soroban contract.";
+      }
+      const version = view.getUint32(4, true); // little-endian version field
+      if (version !== 1) {
+        return `Unsupported WASM version: ${version}. Expected version 1.`;
+      }
+      return null;
+    } catch {
+      return "Could not read file header for WASM validation";
+    }
+  }, []);
 
   const setUploadProgress = useCallback((id: string, progress: number) => {
     setFiles((prev) =>
@@ -172,7 +201,7 @@ export default function WasmUpload({
   }, [setUploadProgress]);
 
   const onDrop = useCallback(
-    (acceptedFiles: File[]) => {
+    async (acceptedFiles: File[]) => {
       const newFiles: WasmFile[] = acceptedFiles.map((file) => ({
         file,
         id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -180,7 +209,7 @@ export default function WasmUpload({
         progress: 0,
       }));
 
-      //validate files
+      //synchronous checks: extension, size, empty
       const validFiles: WasmFile[] = [];
       const invalidFiles: WasmFile[] = [];
 
@@ -193,23 +222,34 @@ export default function WasmUpload({
         }
       });
 
+      // Async magic-bytes check — runs BEFORE upload dispatch
+      const magicValidFiles: WasmFile[] = [];
+      for (const wasmFile of validFiles) {
+        const magicError = await validateWasmMagic(wasmFile.file);
+        if (magicError) {
+          invalidFiles.push({ ...wasmFile, status: "error", error: magicError });
+        } else {
+          magicValidFiles.push(wasmFile);
+        }
+      }
+
       if (invalidFiles.length > 0) {
         alert(invalidFiles[0].error || "Validation Error: Invalid non-WASM file uploaded.");
       }
 
-      const totalFiles = [...files, ...validFiles, ...invalidFiles];
+      const totalFiles = [...files, ...magicValidFiles, ...invalidFiles];
       if (totalFiles.length > maxFiles) {
         alert(`Maximum ${maxFiles} files allowed`);
         return;
       }
 
-      setFiles((prev) => [...prev, ...validFiles, ...invalidFiles]);
-      onFileSelect?.(validFiles.map((f) => f.file));
+      setFiles((prev) => [...prev, ...magicValidFiles, ...invalidFiles]);
+      onFileSelect?.(magicValidFiles.map((f) => f.file));
 
-      //auto-upload valid files
-      validFiles.forEach((f) => uploadFile(f));
+      //auto-upload valid files (after magic-bytes check passes)
+      magicValidFiles.forEach((f) => uploadFile(f));
     },
-    [files, maxFiles, onFileSelect, uploadFile, validateWasm]
+    [files, maxFiles, onFileSelect, uploadFile, validateWasm, validateWasmMagic]
   );
 
   const { getRootProps, getInputProps, isDragReject } = useDropzone({

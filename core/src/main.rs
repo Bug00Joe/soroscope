@@ -943,6 +943,40 @@ async fn analyze_wasm(
         .decode(&payload.wasm_bytes)
         .map_err(|e| AppError::BadRequest(format!("Invalid base64 WASM data: {}", e)))?;
 
+    // ── Validate WASM size: reject files larger than 2 MB ────────────────────
+    const MAX_WASM_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+    if wasm_bytes.len() > MAX_WASM_SIZE {
+        return Err(AppError::BadRequest(format!(
+            "WASM file too large: {} bytes exceeds the {} byte (2 MB) limit",
+            wasm_bytes.len(),
+            MAX_WASM_SIZE,
+        )));
+    }
+
+    // ── Validate WASM magic bytes: must start with \0asm (0x00 0x61 0x73 0x6D) ──
+    const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
+    if wasm_bytes.len() < 8 || wasm_bytes[..4] != WASM_MAGIC {
+        return Err(AppError::BadRequest(
+            "Invalid WASM file: missing magic bytes (\\0asm). \
+             Please upload a compiled Soroban .wasm contract."
+                .to_string(),
+        ));
+    }
+
+    // ── Validate WASM binary version: must be version 1 (little-endian) ──────
+    let version = u32::from_le_bytes([
+        wasm_bytes[4],
+        wasm_bytes[5],
+        wasm_bytes[6],
+        wasm_bytes[7],
+    ]);
+    if version != 1 {
+        return Err(AppError::BadRequest(format!(
+            "Unsupported WASM version: {}. Expected version 1.",
+            version
+        )));
+    }
+
     let function_name = payload.function_name.clone();
     let args = payload.args.clone().unwrap_or_default();
 
