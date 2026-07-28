@@ -14,6 +14,7 @@ import { NutritionLabelSkeleton } from "../components/NutritionLabelSkeleton";
 import { ResourceHeatmap } from "../components/ResourceHeatmap";
 import { ResultViewer } from "../components/Resultviewer";
 import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
+import { FeeEstimationPreview } from "../components/FeeEstimationPreview";
 import { UploadZone } from "../components/upload-zone";
 import { CopyButton } from "../components/CopyButton";
 import { useNetwork } from "../context/NetworkContext";
@@ -177,7 +178,7 @@ export default function Home() {
                           ledger_read_bytes: analysisReport.ledger_read_bytes,
                           ledger_write_bytes: analysisReport.ledger_write_bytes,
                           transaction_size_bytes: analysisReport.transaction_size_bytes,
-                          cost_stroops: (analysisReport as any).cost_stroops,
+                          cost_stroops: analysisReport.cost_stroops,
                           state_snapshot: currentResult.stateSnapshot
                         }} />
                       </div>
@@ -197,8 +198,16 @@ export default function Home() {
                           ledger_read_bytes={analysisReport.ledger_read_bytes}
                           ledger_write_bytes={analysisReport.ledger_write_bytes}
                           transaction_size_bytes={analysisReport.transaction_size_bytes}
-                          cost_stroops={(analysisReport as any).cost_stroops}
-                          testnetAverages={(analysisReport as any).testnet_averages}
+                          cost_stroops={analysisReport.cost_stroops}
+                          testnetAverages={analysisReport.testnet_averages}
+                        />
+                      </div>
+                    )}
+                    {analysisReport && analysisReport.cost_stroops !== undefined && (
+                      <div className="mt-4">
+                        <FeeEstimationPreview
+                          costStroops={analysisReport.cost_stroops}
+                          loading={loading}
                         />
                       </div>
                     )}

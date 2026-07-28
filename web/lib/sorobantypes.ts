@@ -216,3 +216,27 @@ export function generateMockResourceCost(): ResourceCost {
     transaction_size_bytes: Math.floor(Math.random() * 2 * 1024),
   };
 }
+
+export interface FeeBumpOption {
+  label: string;
+  multiplier: number;
+  feeStroops: number;
+  feeXlm: string;
+  description: string;
+}
+
+export interface FeeEstimate {
+  minResourceFeeStroops: number;
+  classicFeeStroops: number;
+  totalFeeStroops: number;
+  totalFeeXlm: string;
+  feeBumps: FeeBumpOption[];
+  networkFees: {
+    low: number;
+    medium: number;
+    high: number;
+  };
+  surgeMultiplier: number;
+}
+
+export type FeeBumpLevel = 'low' | 'medium' | 'high';
