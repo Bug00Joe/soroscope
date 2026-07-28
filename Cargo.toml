@@ -4,4 +4,7 @@ members = [
     "contracts/error_codes",
     "contracts/math",
     "contracts/staking_rewards",
+    "contracts/governance",
+    "contracts/batch_transfer",
+    "contracts/cross_call",
 ]
