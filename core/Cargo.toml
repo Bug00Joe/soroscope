@@ -50,6 +50,13 @@ rsa = "0.9"
 wasm-encoder = { version = "0.240", features = ["wasmparser"] }
 wasmparser = "0.240"
 rayon = "1.8"
+# gRPC event streaming (Issue #583)
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[build-dependencies]
+tonic-build = "0.12"
 
 [dev-dependencies]
 proptest = "1.4.0"

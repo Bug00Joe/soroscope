@@ -9,6 +9,7 @@ pub mod fee_analytics;
 pub mod fee_collector;
 pub mod fee_store;
 mod gas_golfing;
+mod grpc;
 pub mod insights;
 mod jobs;
 mod merkle_tree;
@@ -2058,6 +2059,17 @@ async fn main() {
         simulation_bus,
     });
 
+    // Clone the bus Arc before app_state is moved into the router, so the gRPC
+    // server can subscribe to the same broadcast channel.
+    let grpc_port: u16 = env::var("GRPC_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50051);
+    let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", grpc_port)
+        .parse()
+        .expect("Invalid gRPC bind address");
+    let grpc_bus = Arc::clone(&app_state.simulation_bus);
+
     let cors = CorsLayer::new().allow_origin(Any);
 
     let protected = Router::new()
@@ -2109,6 +2121,11 @@ async fn main() {
         "Swagger UI available at http://{}/swagger-ui",
         listener.local_addr().unwrap()
     );
+
+    // ── Spawn gRPC server on its dedicated port ──────────────────────────
+    tokio::spawn(async move {
+        grpc::serve(grpc_addr, grpc_bus).await;
+    });
 
     axum::serve(listener, app)
         .await
