@@ -43,7 +43,7 @@ stellar-strkey = "0.0.9"
 jsonwebtoken = "9"
 ed25519-dalek = "2"
 rand = "0.8"
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 sled = "0.34"
 sqlx = { version = "0.7", features = ["runtime-tokio", "tls-native-tls", "postgres", "sqlite", "uuid", "chrono", "migrate"] }
 redis = { version = "0.25", features = ["tokio-comp"] }
