@@ -18,6 +18,9 @@ import { twMerge } from "tailwind-merge";
 import { ApiError, analyzeService } from "../lib/api";
 import { createUserFriendlyMessage, formatError } from "../lib/errorHandling";
 import { arrayBufferToBase64 } from "../lib/utils";
+import { useWasmValidationWorker } from "../hooks/useWasmValidationWorker";
+import { extractContractFunctions } from "../lib/wasmValidation";
+import type { WasmValidationReport } from "../lib/wasmValidation";
 
 // Utility for cleaner tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -29,11 +32,13 @@ function cn(...inputs: ClassValue[]) {
 interface WasmFile {
   file: File;
   id: string;
-  status: "pending" | "uploading" | "success" | "error";
+  status: "pending" | "validating" | "uploading" | "success" | "error";
   progress: number;
   error?: string;
   hash?: string;
   simulationResult?: unknown;
+  /** Structured decode report produced off the main thread. */
+  validation?: WasmValidationReport;
 }
 
 interface WasmUploadProps {
@@ -81,6 +86,7 @@ export default function WasmUpload({
 }: WasmUploadProps) {
   const [files, setFiles] = useState<WasmFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
+  const { validate } = useWasmValidationWorker();
 
   //validate WASM file
   const validateWasm = useCallback((file: File): string | null => {
@@ -111,11 +117,31 @@ export default function WasmUpload({
     );
 
     try {
-      setUploadProgress(wasmFile.id, 20);
+      setUploadProgress(wasmFile.id, 10);
       const buffer = await wasmFile.file.arrayBuffer();
-      setUploadProgress(wasmFile.id, 50);
 
-      const wasmBytesBase64 = arrayBufferToBase64(buffer);
+      // Decode/validate in the Web Worker first. The worker takes ownership of
+      // `buffer` (transferable), so base64 encoding uses its own copy.
+      const encodeBuffer = buffer.slice(0);
+      setFiles((prev) =>
+        prev.map((f) => (f.id === wasmFile.id ? { ...f, status: "validating" } : f))
+      );
+      const validation = await validate(buffer, maxFileSize);
+      setUploadProgress(wasmFile.id, 40);
+
+      if (!validation.valid) {
+        throw new Error(
+          validation.errors[0] || "Validation Error: WASM module could not be decoded"
+        );
+      }
+
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === wasmFile.id ? { ...f, status: "uploading", validation } : f
+        )
+      );
+
+      const wasmBytesBase64 = arrayBufferToBase64(encodeBuffer);
       setUploadProgress(wasmFile.id, 80);
 
       const simulationResult = await analyzeService.analyzeWasm({
@@ -169,7 +195,7 @@ export default function WasmUpload({
         )
       );
     }
-  }, [setUploadProgress]);
+  }, [maxFileSize, setUploadProgress, validate]);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -245,8 +271,9 @@ export default function WasmUpload({
     }
   };
 
-  const pendingCount = files.filter((f) => f.status === "pending").length;
-  const uploadingCount = files.filter((f) => f.status === "uploading").length;
+  const uploadingCount = files.filter(
+    (f) => f.status === "uploading" || f.status === "validating"
+  ).length;
   const successCount = files.filter((f) => f.status === "success").length;
 
   return (
@@ -361,12 +388,12 @@ export default function WasmUpload({
                         ? "bg-emerald-100 text-emerald-600"
                         : wasmFile.status === "error"
                         ? "bg-red-100 text-red-600"
-                        : wasmFile.status === "uploading"
+                        : wasmFile.status === "uploading" || wasmFile.status === "validating"
                         ? "bg-indigo-100 text-indigo-600"
                         : "bg-slate-100 text-slate-500"
                     )}
                   >
-                    {wasmFile.status === "uploading" ? (
+                    {wasmFile.status === "uploading" || wasmFile.status === "validating" ? (
                       <Loader2 className="w-5 h-5 animate-spin" />
                     ) : wasmFile.status === "success" ? (
                       <CheckCircle2 className="w-5 h-5" />
@@ -389,7 +416,8 @@ export default function WasmUpload({
                     </div>
 
                     {/* progress bar */}
-                    {wasmFile.status === "uploading" && (
+                    {(wasmFile.status === "uploading" ||
+                      wasmFile.status === "validating") && (
                       <div className="mt-2">
                         <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                           <motion.div
@@ -400,7 +428,9 @@ export default function WasmUpload({
                           />
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
-                          Uploading... {wasmFile.progress}%
+                          {wasmFile.status === "validating"
+                            ? "Decoding WASM module..."
+                            : `Uploading... ${wasmFile.progress}%`}
                         </p>
                       </div>
                     )}
@@ -415,6 +445,15 @@ export default function WasmUpload({
                           WASM hash ready
                         </span>
                       </div>
+                    )}
+
+                    {/* decode summary from the worker */}
+                    {wasmFile.status === "success" && wasmFile.validation && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {wasmFile.validation.sections.length} sections &bull;{" "}
+                        {extractContractFunctions(wasmFile.validation).length} exported
+                        functions &bull; decoded in {wasmFile.validation.durationMs}ms
+                      </p>
                     )}
 
                     {/* error state */}
