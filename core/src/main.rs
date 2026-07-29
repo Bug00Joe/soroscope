@@ -53,6 +53,7 @@ use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, Rp
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use utoipa::{OpenApi, ToSchema};
@@ -138,6 +139,16 @@ struct AppConfig {
     /// L2 treats it as stale. Default 100 ≈ 8 minutes at 5 s/ledger.
     #[serde(default = "default_max_ledger_age")]
     max_ledger_age: u32,
+    /// Broadcast channel capacity for the WebSocket event bus (issue #565).
+    /// Controls the per-subscriber in-flight event buffer; slow consumers
+    /// that fall behind receive `RecvError::Lagged` (backpressure via drop).
+    /// Clamped to [16, 65536]. Default 256.
+    #[serde(default = "default_event_bus_capacity")]
+    event_bus_capacity: usize,
+    /// Emit structured JSON log lines instead of the default human-readable
+    /// format (issue #572). Set `LOG_FORMAT=json` to enable.
+    #[serde(default)]
+    log_format_json: bool,
 }
 
 fn default_health_check_interval() -> u64 {
@@ -194,6 +205,10 @@ fn default_max_ledger_age() -> u32 {
     100
 }
 
+fn default_event_bus_capacity() -> usize {
+    256
+}
+
 fn load_config() -> Result<AppConfig, ConfigError> {
     dotenvy::dotenv().ok();
 
@@ -221,6 +236,8 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("emergency_verification_paused", false)?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
+        .set_default("event_bus_capacity", 256)?
+        .set_default("log_format_json", false)?
         .build()?;
 
     settings.try_deserialize()
@@ -1595,10 +1612,20 @@ async fn main() {
         env::set_var("RUST_LOG", "info");
     }
 
-    tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // ── Tracing init (#572: JSON format + x-request-id correlation) ────
+    let log_json = env::var("LOG_FORMAT").map(|v| v.to_lowercase() == "json").unwrap_or(false);
+    let filter = EnvFilter::from_default_env();
+    if log_json {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     tracing::info!("SoroScope Starting...");
 
@@ -1947,8 +1974,8 @@ async fn main() {
     let job_queue = JobQueue::new(database_url, &config.redis_url, job_queue_config.clone())
         .await
         .expect("Failed to initialize job queue");
-    // ── WebSocket event bus ─────────────────────────────────────────────
-    let simulation_bus = SimulationBus::new();
+    // ── WebSocket event bus (#565: configurable bounded channel) ───────
+    let simulation_bus = SimulationBus::with_capacity(config.event_bus_capacity);
 
     let job_worker = JobWorker::new(
         job_queue.clone(),
@@ -2094,6 +2121,12 @@ async fn main() {
         .layer(Extension(auth_state))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        // ── x-request-id (#572) ───────────────────────────────────────
+        // Assigns a UUID to every inbound request under the `x-request-id`
+        // header and propagates it to outbound responses so clients can
+        // correlate log lines with specific requests.
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(app_state); // ← thread AppState through all handlers
 
     let bind_addr = format!("0.0.0.0:{}", config.server_port);
@@ -2110,9 +2143,37 @@ async fn main() {
         listener.local_addr().unwrap()
     );
 
+    // ── Graceful shutdown (#573: SIGTERM / SIGINT) ────────────────────
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("Server failed to start");
+
+    tracing::info!("Server shut down gracefully.");
+}
+
+/// Waits for SIGTERM (Unix) or Ctrl-C (all platforms) and resolves once either
+/// signal is received, allowing axum to finish in-flight requests before exit.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT (Ctrl-C), shutting down…");
+        }
+        _ = sigterm => {
+            tracing::info!("Received SIGTERM, shutting down…");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

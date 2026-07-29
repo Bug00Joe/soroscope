@@ -49,9 +49,15 @@ use crate::jobs::JobId;
 
 // ── Channel capacity ─────────────────────────────────────────────────────────
 
-/// Number of events that can be buffered per broadcast channel slot before
-/// slow consumers are forced to drop events via `RecvError::Lagged`.
+/// Default number of events buffered per broadcast channel slot before slow
+/// consumers are forced to drop events via `RecvError::Lagged`.
 const BUS_CAPACITY: usize = 256;
+
+/// Minimum allowed channel capacity (prevents degenerate single-slot configs).
+const BUS_CAPACITY_MIN: usize = 16;
+
+/// Maximum allowed channel capacity (guards against OOM from untrusted config).
+const BUS_CAPACITY_MAX: usize = 65_536;
 
 // ── Event types ──────────────────────────────────────────────────────────────
 
@@ -165,9 +171,20 @@ pub struct SimulationBus {
 }
 
 impl SimulationBus {
-    /// Create a new bus with the default channel capacity.
+    /// Create a new bus with the default channel capacity (`BUS_CAPACITY`).
     pub fn new() -> Arc<Self> {
-        let (sender, _) = broadcast::channel(BUS_CAPACITY);
+        Self::with_capacity(BUS_CAPACITY)
+    }
+
+    /// Create a new bus with an explicit channel capacity.
+    ///
+    /// `capacity` is clamped to `[BUS_CAPACITY_MIN, BUS_CAPACITY_MAX]`.
+    /// Slow subscribers that fall more than `capacity` events behind receive
+    /// [`RecvError::Lagged`] on the next receive call — this is the intended
+    /// backpressure mechanism (drop the stale event, catch up on the next tick).
+    pub fn with_capacity(capacity: usize) -> Arc<Self> {
+        let clamped = capacity.clamp(BUS_CAPACITY_MIN, BUS_CAPACITY_MAX);
+        let (sender, _) = broadcast::channel(clamped);
         Arc::new(Self { sender })
     }
 
