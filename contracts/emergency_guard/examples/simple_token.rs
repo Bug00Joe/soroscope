@@ -131,6 +131,8 @@ impl SimpleToken {
 
     pub fn get_pause_state(env: Env) -> u32 {
         EmergencyGuard::get_pause_state(env)
+    }
+
     // ==== EMERGENCY GUARD FUNCTIONS ====
 
     /// Pause only transfers (minting and burning still work)
@@ -229,8 +231,6 @@ impl SimpleToken {
 
     pub fn get_threshold(env: Env) -> u32 {
         EmergencyGuard::get_threshold(env)
-    }
-
     }
 
     /// Add new admin (requires existing admin authorization)
