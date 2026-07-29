@@ -396,6 +396,25 @@ impl JobQueue {
         Ok(id)
     }
 
+    /// Number of jobs currently waiting in the Redis queue. Used for the
+    /// `job_queue_depth` metric.
+    pub async fn queue_depth(&self) -> Result<i64, JobError> {
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| {
+                JobError::ProcessingFailed(format!("Failed to get Redis connection: {}", e))
+            })?;
+
+        let depth: i64 = conn
+            .llen("soroscope:jobs:queue")
+            .await
+            .map_err(|e| JobError::ProcessingFailed(format!("Redis LLEN failed: {}", e)))?;
+
+        Ok(depth)
+    }
+
     /// Get a job by ID
     pub async fn get(&self, id: &JobId) -> Result<Option<Job>, JobError> {
         let job = match &self.pool {

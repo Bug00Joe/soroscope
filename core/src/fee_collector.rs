@@ -1,9 +1,10 @@
 use crate::fee_store::{FeeStore, LedgerFeeSample};
 use crate::rpc_provider::ProviderRegistry;
+use crate::AppMetrics;
 use chrono::Utc;
 use reqwest::Client;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing;
 
@@ -54,6 +55,7 @@ pub struct FeeCollector {
     client: Client,
     config: FeeCollectorConfig,
     last_collected_sequence: std::sync::atomic::AtomicU64,
+    metrics: Arc<AppMetrics>,
 }
 
 impl FeeCollector {
@@ -62,6 +64,7 @@ impl FeeCollector {
         registry: Arc<ProviderRegistry>,
         store: Arc<FeeStore>,
         config: FeeCollectorConfig,
+        metrics: Arc<AppMetrics>,
     ) -> Self {
         Self {
             registry,
@@ -72,6 +75,7 @@ impl FeeCollector {
                 .expect("Failed to create HTTP client"),
             config,
             last_collected_sequence: std::sync::atomic::AtomicU64::new(0),
+            metrics,
         }
     }
 
@@ -88,14 +92,36 @@ impl FeeCollector {
         loop {
             interval.tick().await;
 
-            if let Err(e) = self.collect_latest_fees().await {
-                tracing::error!(error = %e, "Failed to collect fee data");
+            let started_at = Instant::now();
+            let result = self.collect_latest_fees().await;
+            self.metrics
+                .indexing_latency_seconds
+                .with_label_values(&["fee_collector"])
+                .observe(started_at.elapsed().as_secs_f64());
+
+            match result {
+                Ok(true) => {
+                    self.metrics
+                        .events_processed_total
+                        .with_label_values(&["fee_collector"])
+                        .inc();
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    self.metrics
+                        .indexing_errors_total
+                        .with_label_values(&["fee_collector"])
+                        .inc();
+                    tracing::error!(error = %e, "Failed to collect fee data");
+                }
             }
         }
     }
 
-    /// Collect fee data from the latest ledger
-    async fn collect_latest_fees(&self) -> Result<(), FeeCollectorError> {
+    /// Collect fee data from the latest ledger. Returns `true` when a new
+    /// ledger's fee sample was fetched and persisted, `false` when there was
+    /// nothing new to collect.
+    async fn collect_latest_fees(&self) -> Result<bool, FeeCollectorError> {
         // Get latest ledger sequence
         let latest_sequence = self.get_latest_ledger_sequence().await?;
 
@@ -110,7 +136,7 @@ impl FeeCollector {
                 last_collected = last_collected,
                 "No new ledgers to collect"
             );
-            return Ok(());
+            return Ok(false);
         }
 
         // Fetch ledger details
@@ -133,7 +159,7 @@ impl FeeCollector {
             "Collected fee data"
         );
 
-        Ok(())
+        Ok(true)
     }
 
     /// Get the latest ledger sequence from RPC

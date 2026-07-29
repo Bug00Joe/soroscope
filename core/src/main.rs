@@ -333,6 +333,14 @@ struct AppMetrics {
     rpc_error_count_total: IntCounterVec,
     simulation_requests_total: IntCounterVec,
     resource_utilization_percent: prometheus::GaugeVec,
+    /// Wall-clock time spent per indexing/collection cycle, by stage.
+    indexing_latency_seconds: HistogramVec,
+    /// Ledger events successfully processed, by stage.
+    events_processed_total: IntCounterVec,
+    /// Indexing cycle failures, by stage.
+    indexing_errors_total: IntCounterVec,
+    /// Depth of background job queues, by queue name.
+    job_queue_depth: prometheus::GaugeVec,
 }
 
 impl AppMetrics {
@@ -367,11 +375,40 @@ impl AppMetrics {
             ),
             &["resource"],
         )?;
+        let indexing_latency_seconds = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "indexing_latency_seconds",
+                "Latency of ledger indexing/collection cycles in seconds",
+            ),
+            &["stage"],
+        )?;
+        let events_processed_total = IntCounterVec::new(
+            Opts::new(
+                "events_processed_total",
+                "Total number of ledger events successfully processed",
+            ),
+            &["stage"],
+        )?;
+        let indexing_errors_total = IntCounterVec::new(
+            Opts::new(
+                "indexing_errors_total",
+                "Total number of indexing cycle failures",
+            ),
+            &["stage"],
+        )?;
+        let job_queue_depth = prometheus::GaugeVec::new(
+            Opts::new("job_queue_depth", "Current depth of background job queues"),
+            &["queue"],
+        )?;
 
         registry.register(Box::new(simulation_latency_seconds.clone()))?;
         registry.register(Box::new(rpc_error_count_total.clone()))?;
         registry.register(Box::new(simulation_requests_total.clone()))?;
         registry.register(Box::new(resource_utilization_percent.clone()))?;
+        registry.register(Box::new(indexing_latency_seconds.clone()))?;
+        registry.register(Box::new(events_processed_total.clone()))?;
+        registry.register(Box::new(indexing_errors_total.clone()))?;
+        registry.register(Box::new(job_queue_depth.clone()))?;
 
         Ok(Self {
             registry,
@@ -379,6 +416,10 @@ impl AppMetrics {
             rpc_error_count_total,
             simulation_requests_total,
             resource_utilization_percent,
+            indexing_latency_seconds,
+            events_processed_total,
+            indexing_errors_total,
+            job_queue_depth,
         })
     }
 }
@@ -2057,6 +2098,8 @@ async fn main() {
 
     tracing::info!("Database migrations completed");
 
+    let metrics = Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics"));
+
     let fee_store = Arc::new(FeeStore::new(db_pool.clone()));
     let fee_analytics_engine = FeeAnalyticsEngine::new();
     let job_queue_config = JobQueueConfig {
@@ -2100,6 +2143,27 @@ async fn main() {
     // Spawn background cleanup task
     job_queue.spawn_cleanup_task();
 
+    // Periodically sample Redis job-queue depth into the `job_queue_depth` gauge.
+    let depth_queue = job_queue.clone();
+    let depth_metrics = Arc::clone(&metrics);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            match depth_queue.queue_depth().await {
+                Ok(depth) => {
+                    depth_metrics
+                        .job_queue_depth
+                        .with_label_values(&["jobs"])
+                        .set(depth as f64);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to sample job queue depth");
+                }
+            }
+        }
+    });
+
     // Spawn worker
     let worker = JobWorker::new(
         job_queue.clone(),
@@ -2126,6 +2190,7 @@ async fn main() {
             Arc::clone(&registry),
             Arc::clone(&fee_store),
             collector_config,
+            Arc::clone(&metrics),
         ));
 
         tokio::spawn(async move {
@@ -2174,7 +2239,7 @@ async fn main() {
         job_queue,
         fee_analytics_engine,
         fee_store,
-        metrics: Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics")),
+        metrics,
         simulation_bus,
     });
 
