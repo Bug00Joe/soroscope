@@ -16,24 +16,24 @@ pub struct Proxy;
 #[contractimpl]
 impl Proxy {
     pub fn initialize(env: Env, admin: Address, implementation: Address) {
-        if env.storage().persistent().has(&DataKey::Admin) {
+        if env.storage().instance().has(&DataKey::Admin) {
             panic!("Proxy already initialized");
         }
 
-        env.storage().persistent().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::Implementation, &implementation);
-        env.storage().persistent().set(&DataKey::Counter, &0i32);
+        env.storage().instance().set(&DataKey::Counter, &0i32);
     }
 
     pub fn get_admin(env: Env) -> Address {
-        env.storage().persistent().get(&DataKey::Admin).unwrap()
+        env.storage().instance().get(&DataKey::Admin).unwrap()
     }
 
     pub fn get_implementation(env: Env) -> Address {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Implementation)
             .unwrap()
     }
@@ -42,7 +42,7 @@ impl Proxy {
         let admin = Self::get_admin(env.clone());
         admin.require_auth();
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::Implementation, &implementation);
     }
 
@@ -55,7 +55,7 @@ impl Proxy {
         let admin = Self::get_admin(env.clone());
         admin.require_auth();
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::Implementation, &implementation);
         Self::delegate_call(env, method, args)
     }
@@ -76,13 +76,13 @@ impl Proxy {
 
     pub fn get_value(env: Env) -> i32 {
         env.storage()
-            .persistent()
+            .instance()
             .get(&DataKey::Counter)
             .unwrap_or(0)
     }
 
     pub fn set_value(env: Env, value: i32) {
-        env.storage().persistent().set(&DataKey::Counter, &value);
+        env.storage().instance().set(&DataKey::Counter, &value);
     }
 
     pub fn set_storage(env: Env, key: BytesN<32>, value: Val) {
