@@ -3,6 +3,7 @@
 mod auth;
 mod benchmarks;
 mod cache;
+mod call_trace_parser;
 mod comparison;
 mod errors;
 pub mod fee_analytics;
