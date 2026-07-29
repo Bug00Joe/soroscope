@@ -97,6 +97,10 @@ See [`core/MERKLE_TREE_README.md`](./core/MERKLE_TREE_README.md) for full API re
 
 The **web** app is a Next.js + Tailwind CSS dashboard for exploring resource usage visually.
 
+### Features
+- **Client-Side Simulation Rate Limiting**: Throttles contract simulation requests to a maximum of 2 calls per second via `RequestQueueManager` to prevent hitting Soroban RPC rate limits (429/503).
+- **Infinite Scroll Telemetry Logs**: Smooth `IntersectionObserver`-based infinite scrolling for browsing historical telemetry logs and transaction records.
+
 ### Install Dependencies
 ```bash
 cd web
