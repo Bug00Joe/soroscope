@@ -12,11 +12,11 @@ fn require_not_paused(e: &Env, operation: u32) {
 }
 
 pub trait TokenTrait {
-    fn initialize(e: Env, admin: Address, decimal: u32, name: String, symbol: String);
+    fn initialize(e: Env, admin: Address, decimal: u32, name: String, symbol: String, guardian: Address);
     fn mint(e: Env, to: Address, amount: i128);
     fn set_admin(e: Env, new_admin: Address);
-    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError>;
-    fn emergency_pause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError>;
+    fn guard_pause(e: Env, caller: Address, operation: u32, paused: bool) -> Result<(), GuardError>;
+    fn emergency_pause(e: Env, caller: Address) -> Result<(), GuardError>;
     fn guard_resume(e: Env, approvers: Vec<Address>) -> Result<(), GuardError>;
     fn guard_add_admin(
         e: Env,
@@ -48,14 +48,13 @@ pub struct Token;
 
 #[contractimpl]
 impl TokenTrait for Token {
-    fn initialize(e: Env, admin: Address, decimal: u32, name: String, symbol: String) {
+    fn initialize(e: Env, admin: Address, decimal: u32, name: String, symbol: String, guardian: Address) {
         if has_administrator(&e) {
             panic!("already initialized");
         }
         write_administrator(&e, &admin);
-        EmergencyGuard::initialize(e.clone(), vec![&e, admin.clone()], 1)
+        EmergencyGuard::initialize(e.clone(), vec![&e, admin.clone()], 1, guardian)
             .expect("failed to initialize emergency guard");
-        // One write instead of three separate writes for name/symbol/decimals.
         write_metadata(&e, &name, &symbol, decimal);
     }
 
@@ -80,12 +79,12 @@ impl TokenTrait for Token {
         write_administrator(&e, &new_admin);
     }
 
-    fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), GuardError> {
-        EmergencyGuard::set_pause(e, admin, operation, paused)
+    fn guard_pause(e: Env, caller: Address, operation: u32, paused: bool) -> Result<(), GuardError> {
+        EmergencyGuard::set_pause(e, caller, operation, paused)
     }
 
-    fn emergency_pause(e: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
-        EmergencyGuard::emergency_pause(e, approvers)
+    fn emergency_pause(e: Env, caller: Address) -> Result<(), GuardError> {
+        EmergencyGuard::emergency_pause(e, caller)
     }
 
     fn guard_resume(e: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
