@@ -52,6 +52,7 @@ use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -138,6 +139,11 @@ struct AppConfig {
     /// L2 treats it as stale. Default 100 ≈ 8 minutes at 5 s/ledger.
     #[serde(default = "default_max_ledger_age")]
     max_ledger_age: u32,
+    /// Comma-separated list of allowed CORS origins.
+    /// Example: `http://localhost:3000,https://app.example.com`
+    /// When empty, defaults to `*` (allow all origins).
+    #[serde(default = "default_allowed_origins")]
+    allowed_origins: String,
 }
 
 fn default_health_check_interval() -> u64 {
@@ -194,6 +200,13 @@ fn default_max_ledger_age() -> u32 {
     100
 }
 
+fn default_allowed_origins() -> String {
+    // Empty string means: fall back to allow-all (*).
+    // Operators set ALLOWED_ORIGINS=http://localhost:3000,https://app.example.com
+    // in their environment to restrict access.
+    String::new()
+}
+
 fn load_config() -> Result<AppConfig, ConfigError> {
     dotenvy::dotenv().ok();
 
@@ -221,6 +234,7 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("emergency_verification_paused", false)?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
+        .set_default("allowed_origins", "")?
         .build()?;
 
     settings.try_deserialize()
@@ -2058,7 +2072,21 @@ async fn main() {
         simulation_bus,
     });
 
-    let cors = CorsLayer::new().allow_origin(Any);
+    let cors = {
+        let raw = config.allowed_origins.trim().to_string();
+        if raw.is_empty() {
+            // No restriction configured: allow all origins.
+            CorsLayer::new().allow_origin(Any)
+        } else {
+            // Parse comma-separated origins and allow only those.
+            use axum::http::HeaderValue;
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse::<HeaderValue>().ok())
+                .collect();
+            CorsLayer::new().allow_origin(origins)
+        }
+    };
 
     let protected = Router::new()
         .route("/analyze", post(analyze))
