@@ -1,20 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "core",
-    "contracts/emergency_guard",
     "contracts/error_codes",
-    "contracts/token",
-    "contracts/hello_soroban",
-    "contracts/storage_heavy",
-    "contracts/liquidity_pool",
-    "contracts/cpu_heavy",
-    "contracts/cross_call",
-    "contracts/factory",
     "contracts/math",
-    "contracts/typed_data_auth",
-    "contracts/proxy",
-    "contracts/flash_loan_vault",
     "contracts/staking_rewards",
-    "contracts/cross_chain_verifier",
 ]

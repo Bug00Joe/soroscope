@@ -1,335 +1,222 @@
-import { WalletModal } from "../components/WalletModal";
+import Head from "next/head";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import { HeaderNav, type NavTab } from "../components/HeaderNav";
 import { ConnectButton } from "../components/ConnectButton";
-import { useState } from 'react';
-import { ResultViewer } from '../components/Resultviewer';
-import { InvocationHistory, useInvocationHistory } from '../components/InnovocationHistory';
-import { NutritionLabel } from '../components/NutritionLabel';
-import { FunctionSidebar } from '../components/FunctionSidebar';
-import { ContractInteraction } from '../components/ContractInteraction';
-import { MOCK_CONTRACT_FUNCTIONS, generateMockResult, generateMockResourceCost } from '../lib/sorobantypes';
-import type { ContractFunction, InvocationResult } from '../lib/sorobantypes';
-import { UploadZone } from '../components/upload-zone';
-import { extractErrorDetails, createUserFriendlyMessage } from '../lib/errorHandling';
-import { ErrorBoundary } from '../components/ErrorBoundary';
+import { ContractInteraction } from "../components/ContractInteraction";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { FunctionSidebar } from "../components/FunctionSidebar";
+import { TransactionHistoryTable } from "../components/TransactionHistoryTable";
+import { GasUsageChart } from "../components/GasUsageChart";
+import { InvocationHistory } from "../components/InnovocationHistory";
+import { NutritionLabel } from "../components/NutritionLabel";
+import { NutritionLabelSkeleton } from "../components/NutritionLabelSkeleton";
+import { ResourceHeatmap } from "../components/ResourceHeatmap";
+import { ResultViewer } from "../components/Resultviewer";
+import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
+import { UploadZone } from "../components/upload-zone";
+import { CopyButton } from "../components/CopyButton";
+import { useNetwork } from "../context/NetworkContext";
+import { clearLatestAnalysis } from "../lib/analysisStorage";
+import { analyzeService } from "../lib/api";
+import {
+  MOCK_CONTRACT_FUNCTIONS,
+  generateMockResult,
+  generateMockTransactions,
+  type ContractFunction,
+  type InvocationResult,
+} from "../lib/sorobantypes";
 
 export default function Home() {
-  const [contractId, setContractId] = useState('CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q');
-  const [selectedFunction, setSelectedFunction] = useState<ContractFunction>(MOCK_CONTRACT_FUNCTIONS[0]);
+  const { network } = useNetwork();
+  const [tab, setTab] = useState<NavTab>('explorer');
+  const [contractId, setContractId] = useState(network.defaultContractId);
+  const [selectedFunction, setSelectedFunction] = useState<ContractFunction>(
+    MOCK_CONTRACT_FUNCTIONS[0],
+  );
   const [currentResult, setCurrentResult] = useState<InvocationResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'explorer' | 'history'>('explorer');
-  const { history, addToHistory } = useInvocationHistory();
+  const [wasmData, setWasmData] = useState<string | null>(null);
+  const [uploadResetKey, setUploadResetKey] = useState(0);
+  const mockTransactions = useMemo(() => generateMockTransactions(47), []);
 
-  const handleSimulate = async (inputs: Record<string, any>) => {
+  useEffect(() => {
+    setContractId(network.defaultContractId);
+  }, [network]);
+
+  useEffect(() => {
+    setCurrentResult(null);
+  }, []);
+
+  const handleSimulate = async (inputs: Record<string, any>, customWasmData?: string) => {
     setLoading(true);
-    let errorType: string | undefined;
     try {
-      const response = await fetch('http://localhost:8080/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contract_id: contractId,
-          function_name: selectedFunction.name,
-        }),
-      });
-
-      if (!response.ok) {
-        // Parse error response from backend
-        const errorResponse = await extractErrorDetails(response);
-        errorType = errorResponse.error;
-        const userMessage = createUserFriendlyMessage(errorResponse);
-        throw new Error(userMessage);
-      }
-
-      const report = await response.json();
+      const activeWasmData = customWasmData ?? wasmData;
+      const report = activeWasmData
+        ? await analyzeService.analyzeWasm({
+            wasm_bytes: activeWasmData,
+            function_name: selectedFunction.name,
+            args: Object.values(inputs).map((value) => String(value)),
+          })
+        : await analyzeService.analyze({
+            contract_id: contractId,
+            function_name: selectedFunction.name,
+          });
 
       const result: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
+        id: Math.random().toString(36).slice(2),
         functionName: selectedFunction.name,
         inputs,
         result: generateMockResult(selectedFunction.name, inputs),
+        analysisReport: report,
         resourceCost: report,
+        stateSnapshot: report.state_snapshot,
+        callGraphMermaid: report.call_graph_mermaid,
         timestamp: Date.now(),
         success: true,
       };
 
       setCurrentResult(result);
-      addToHistory(result);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred during analysis';
-      
-      const errorResult: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
+      const message = error instanceof Error ? error.message : "Analysis failed";
+      setCurrentResult({
+        id: Math.random().toString(36).slice(2),
         functionName: selectedFunction.name,
         inputs,
-        error: errorMessage,
-        errorType: errorType || 'UNKNOWN_ERROR',
+        error: message,
+        errorType: "ANALYSIS_ERROR",
         timestamp: Date.now(),
         success: false,
-      };
-      setCurrentResult(errorResult);
-      addToHistory(errorResult);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFileAnalysis = async (file: File) => {
-    setLoading(true);
-    let errorType: string | undefined;
-    try {
-      // Convert file to ArrayBuffer
-      const arrayBuffer = await file.arrayBuffer();
-      const response = await fetch('http://localhost:8080/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: arrayBuffer,
       });
-
-      if (!response.ok) {
-        // Parse error response from backend
-        const errorResponse = await extractErrorDetails(response);
-        errorType = errorResponse.error;
-        const userMessage = createUserFriendlyMessage(errorResponse);
-        throw new Error(userMessage);
-      }
-
-      const report = await response.json();
-
-      const result: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
-        functionName: 'WASM Analysis',
-        inputs: {},
-        result: null,
-        resourceCost: report,
-        timestamp: Date.now(),
-        success: true,
-      };
-
-      setCurrentResult(result);
-      addToHistory(result);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred during analysis';
-      
-      const errorResult: InvocationResult = {
-        id: Math.random().toString(36).substring(7),
-        functionName: 'WASM Analysis',
-        inputs: {},
-        error: errorMessage,
-        errorType: errorType || 'UNKNOWN_ERROR',
-        timestamp: Date.now(),
-        success: false,
-      };
-      setCurrentResult(errorResult);
-      addToHistory(errorResult);
     } finally {
       setLoading(false);
     }
   };
 
-   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0f1117' }}>
-      {/* Header */}
-      <header
-        style={{
-          backgroundColor: '#1a1f26',
-          borderBottom: '1px solid #30363d',
-          padding: '24px 0',
-          position: 'sticky',
-          top: 0,
-          zIndex: 100,
-          display: 'flex',
-          justifyContent: 'space-between'
-        }}
-      >
-        <div style={{ maxWidth: '1200px', paddingLeft: '140px' }}>
-          <h1 style={{ margin: '0 0 12px 0', fontSize: '28px', fontWeight: '700', color: '#00d9ff', letterSpacing: '0.5px' }}>
-            SoroScope
-          </h1>
-          <p style={{ margin: '0', color: '#8b949e', fontSize: '14px' }}>
-            Explore and test Soroban smart contracts with precision
-          </p>
-        </div>
+  const handleClearAnalysis = useCallback(() => {
+    setCurrentResult(null);
+    setWasmData(null);
+    clearLatestAnalysis();
+    setUploadResetKey((k) => k + 1);
+  }, []);
 
-        {/* Wallet Connection in Top-Right */}
-        <div className="pr-[125px]">
-          <ConnectButton />
-        </div>
-      </header>
+  const analysisReport = currentResult?.analysisReport;
 
-      {/* Main Content */}
-      <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
+  return (
+    <>
+      <Head>
+        <title>SoroScope - Soroban Smart Contract Resource Analyzer</title>
+        <meta
+          name="description"
+          content="Explore, test, and analyze the CPU, RAM, and ledger footprint of Soroban smart contracts."
+        />
+      </Head>
+      <main className="min-h-screen bg-slate-950 text-slate-100">
+        <HeaderNav tab={tab} setTab={setTab} />
 
-        {/* WASM Upload Zone */}
-        <div
-          style={{
-            backgroundColor: '#161b22',
-            borderRadius: '12px',
-            padding: '28px',
-            marginBottom: '24px',
-            border: '1px solid #30363d',
-          }}
-        >
-          <div style={{ marginBottom: '16px' }}>
-            <h2 style={{ margin: '0 0 4px 0', fontSize: '16px', fontWeight: '600', color: '#c9d1d9' }}>
-              Upload Contract
-            </h2>
-            <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
-              Drop a compiled Soroban contract (.wasm) to analyse its resource usage
-            </p>
+        <section className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+          <div className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+            <ErrorBoundary fallback={() => <div>Upload failed</div>}>
+              <UploadZone
+                key={uploadResetKey}
+                onFileReady={(file) => {
+                  void file;
+                  setWasmData(null);
+                }}
+              />
+            </ErrorBoundary>
           </div>
-          <ErrorBoundary
-            fallback={(error, reset) => (
-              <div className="rounded-lg border border-red-800/60 bg-red-950/30 p-6 text-center text-red-100">
-                <p className="text-sm font-semibold">Upload failed unexpectedly</p>
-                <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-red-200/80">
-                  {error.message}
-                </p>
-                <button
-                  type="button"
-                  onClick={reset}
-                  className="mt-4 rounded-md border border-red-700/70 px-4 py-2 text-sm text-red-100 hover:bg-red-900/40"
-                >
-                  Try another file
-                </button>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <div className="space-y-4">
+              <FunctionSidebar
+                functions={MOCK_CONTRACT_FUNCTIONS}
+                selectedFunction={selectedFunction}
+                onSelect={(func) => {
+                  setSelectedFunction(func);
+                  setCurrentResult(null);
+                }}
+              />
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="text-sm font-medium text-slate-300">
+                    Contract ID
+                  </label>
+                  <CopyButton text={contractId} label="Copy ID" tooltipPosition="left" />
+                </div>
+                <input
+                  value={contractId}
+                  onChange={(e) => setContractId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                />
               </div>
-            )}
-          >
-             <UploadZone
-               onFileReady={(file) => {
-                 console.log('[UploadZone] Contract ready for analysis:', file.name, file.size, 'bytes');
-                 handleFileAnalysis(file);
-               }}
-            />
-          </ErrorBoundary>
-        </div>
-
-        {/* Contract ID Input */}
-        <div
-          style={{
-            backgroundColor: '#161b22',
-            borderRadius: '8px',
-            padding: '24px',
-            marginBottom: '24px',
-            border: '1px solid #30363d',
-          }}
-        >
-          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500', color: '#c9d1d9' }}>
-            Contract ID
-          </label>
-          <input
-            type="text"
-            value={contractId}
-            onChange={(e) => setContractId(e.target.value)}
-            placeholder="Enter Soroban contract ID"
-            style={{
-              width: '100%',
-              padding: '12px 16px',
-              border: '1px solid #30363d',
-              borderRadius: '6px',
-              fontSize: '14px',
-              fontFamily: 'monospace',
-              boxSizing: 'border-box',
-              backgroundColor: '#0d1117',
-              color: '#c9d1d9',
-            }}
-          />
-          <p style={{ margin: '8px 0 0 0', fontSize: '12px', color: '#8b949e' }}>
-            Contract ID: <code style={{ color: '#00d9ff' }}>{contractId.substring(0, 20)}...</code>
-          </p>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
-          {/* Left Column - Function Selection & Form */}
-          <div>
-            <FunctionSidebar
-              functions={MOCK_CONTRACT_FUNCTIONS}
-              selectedFunction={selectedFunction}
-              onSelect={(func) => {
-                setSelectedFunction(func);
-                setCurrentResult(null);
-              }}
-            />
-
-            <ContractInteraction
-              selectedFunction={selectedFunction}
-              loading={loading}
-              onSubmit={handleSimulate}
-            />
-          </div>
-
-          {/* Right Column - Results & History Tabs */}
-          <div>
-            {/* Tabs */}
-            <div
-              style={{
-                display: 'flex',
-                borderBottom: '1px solid #30363d',
-                marginBottom: '24px',
-                backgroundColor: '#161b22',
-                borderRadius: '8px 8px 0 0',
-                gap: '0',
-              }}
-            >
-              <button
-                onClick={() => setTab('explorer')}
-                style={{
-                  flex: 1,
-                  padding: '12px 16px',
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  borderBottom: tab === 'explorer' ? '2px solid #00d9ff' : 'none',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  fontWeight: tab === 'explorer' ? '600' : '500',
-                  color: tab === 'explorer' ? '#00d9ff' : '#8b949e',
-                }}
-              >
-                Result
-              </button>
-              <button
-                onClick={() => setTab('history')}
-                style={{
-                  flex: 1,
-                  padding: '12px 16px',
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  borderBottom: tab === 'history' ? '2px solid #00d9ff' : 'none',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  fontWeight: tab === 'history' ? '600' : '500',
-                  color: tab === 'history' ? '#00d9ff' : '#8b949e',
-                }}
-              >
-                History ({history.length})
-              </button>
+              <ContractInteraction
+                selectedFunction={selectedFunction}
+                loading={loading}
+                onSubmit={(inputs) => void handleSimulate(inputs)}
+              />
             </div>
 
-            {/* Tab Content */}
-            <div
-              style={{
-                backgroundColor: '#161b22',
-                borderRadius: '0 8px 8px 8px',
-                padding: '24px',
-                border: '1px solid #30363d',
-                borderTop: 'none',
-              }}
-            >
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
               {tab === 'explorer' ? (
-                <>
-                  <ResultViewer result={currentResult} />
-                  {currentResult?.resourceCost && (
+                loading ? (
+                  <>
+                    <ResultViewerSkeleton />
                     <div className="mt-4">
-                      <NutritionLabel
-                        cpu_instructions={currentResult.resourceCost.cpu_instructions}
-                        ram_bytes={currentResult.resourceCost.ram_bytes}
-                        ledger_read_bytes={currentResult.resourceCost.ledger_read_bytes}
-                        ledger_write_bytes={currentResult.resourceCost.ledger_write_bytes}
-                        transaction_size_bytes={currentResult.resourceCost.transaction_size_bytes}
-                      />
+                      <NutritionLabelSkeleton />
                     </div>
-                  )}
-                </>
+                  </>
+                ) : currentResult ? (
+                  <>
+                    <ResultViewer result={currentResult} />
+                    {analysisReport && (
+                      <div className="mt-4 flex flex-col gap-4">
+                        <ResourceHeatmap resourceCost={{
+                          cpu_instructions: analysisReport.cpu_instructions,
+                          ram_bytes: analysisReport.ram_bytes,
+                          ledger_read_bytes: analysisReport.ledger_read_bytes,
+                          ledger_write_bytes: analysisReport.ledger_write_bytes,
+                          transaction_size_bytes: analysisReport.transaction_size_bytes,
+                          cost_stroops: (analysisReport as any).cost_stroops,
+                          state_snapshot: currentResult.stateSnapshot
+                        }} />
+                      </div>
+                    )}
+                    {analysisReport && (
+                      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <NutritionLabel
+                          cpu_instructions={analysisReport.cpu_instructions}
+                          ram_bytes={analysisReport.ram_bytes}
+                          ledger_read_bytes={analysisReport.ledger_read_bytes}
+                          ledger_write_bytes={analysisReport.ledger_write_bytes}
+                          transaction_size_bytes={analysisReport.transaction_size_bytes}
+                        />
+                        <GasUsageChart
+                          cpu_instructions={analysisReport.cpu_instructions}
+                          ram_bytes={analysisReport.ram_bytes}
+                          ledger_read_bytes={analysisReport.ledger_read_bytes}
+                          ledger_write_bytes={analysisReport.ledger_write_bytes}
+                          transaction_size_bytes={analysisReport.transaction_size_bytes}
+                          cost_stroops={(analysisReport as any).cost_stroops}
+                          testnetAverages={(analysisReport as any).testnet_averages}
+                        />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleClearAnalysis}
+                      className="mt-4 px-4 py-2 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 transition"
+                    >
+                      Clear analysis
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-slate-500 text-center py-8">
+                    Run an analysis to see results
+                  </p>
+                )
+              ) : tab === 'transactions' ? (
+                <TransactionHistoryTable transactions={mockTransactions} />
               ) : (
                 <InvocationHistory onSelectResult={(result) => {
                   setCurrentResult(result);
@@ -338,91 +225,8 @@ export default function Home() {
               )}
             </div>
           </div>
-        </div>
-
-        {/* Info Cards */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-            gap: '16px',
-          }}
-        >
-          <div
-            style={{
-              backgroundColor: '#161b22',
-              borderRadius: '8px',
-              padding: '16px',
-              borderLeft: '4px solid #00d9ff',
-              border: '1px solid #30363d',
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 8px 0',
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#00d9ff',
-              }}
-            >
-              Simulate
-            </h3>
-            <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
-              Preview contract execution without signing or spending XLM
-            </p>
-          </div>
-
-          <div
-            style={{
-              backgroundColor: '#161b22',
-              borderRadius: '8px',
-              padding: '16px',
-              borderLeft: '4px solid #a371f7',
-              border: '1px solid #30363d',
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 8px 0',
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#a371f7',
-              }}
-            >
-              Invoke
-            </h3>
-            <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
-              Execute real transactions via your connected wallet (Freighter/xBull)
-            </p>
-          </div>
-
-          <div
-            style={{
-              backgroundColor: '#161b22',
-              borderRadius: '8px',
-              padding: '16px',
-              borderLeft: '4px solid #fb8500',
-              border: '1px solid #30363d',
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 8px 0',
-                fontSize: '14px',
-                fontWeight: '600',
-                color: '#fb8500',
-              }}
-            >
-              History
-            </h3>
-            <p style={{ margin: '0', fontSize: '13px', color: '#8b949e' }}>
-              Track all function calls with full details and resource costs
-            </p>
-          </div>
-        </div>
+        </section>
       </main>
-      {/* Wallet Modal */}
-      <WalletModal />
-    </div>
+    </>
   );
 }
