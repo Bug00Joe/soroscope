@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { NetworkProvider } from "../context/NetworkContext";
 import { WalletProvider } from "../context/WalletContext";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { OfflineBanner } from "../components/OfflineBanner";
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
@@ -11,6 +12,7 @@ export default function App({ Component, pageProps }: AppProps) {
       <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
         <NetworkProvider>
           <WalletProvider>
+            <OfflineBanner />
             <Component {...pageProps} />
           </WalletProvider>
         </NetworkProvider>

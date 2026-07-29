@@ -1,5 +1,6 @@
 import Head from "next/head";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Code, FileCode, ChevronDown, ChevronRight } from "lucide-react";
 
 import { HeaderNav, type NavTab } from "../components/HeaderNav";
 import { ConnectButton } from "../components/ConnectButton";
@@ -14,6 +15,7 @@ import { NutritionLabelSkeleton } from "../components/NutritionLabelSkeleton";
 import { ResourceHeatmap } from "../components/ResourceHeatmap";
 import { ResultViewer } from "../components/Resultviewer";
 import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
+import { SyntaxHighlighter } from "../components/SyntaxHighlighter";
 import { UploadZone } from "../components/upload-zone";
 import { CopyButton } from "../components/CopyButton";
 import { useNetwork } from "../context/NetworkContext";
@@ -225,8 +227,181 @@ export default function Home() {
               )}
             </div>
           </div>
+
+          {/* Contract Source & XDR Viewer Section */}
+          <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+            <SourceCodeViewer currentResult={currentResult} />
+          </div>
         </section>
       </main>
     </>
+  );
+}
+
+// ──────────────────────────────────────────────
+// Source Code & XDR Viewer Sub-component
+// ──────────────────────────────────────────────
+
+interface SourceCodeViewerProps {
+  currentResult: InvocationResult | null;
+}
+
+function SourceCodeViewer({ currentResult }: SourceCodeViewerProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [viewMode, setViewMode] = useState<"contract" | "xdr">("contract");
+
+  // Sample contract source code for demonstration
+  const sampleContractSource = `use soroban_sdk::{contract, contractimpl, Env, Address, Symbol, symbol_short, vec, Vec};
+
+pub trait LiquidityPool {
+    fn deposit(e: Env, from: Address, amount: u128) -> bool;
+    fn withdraw(e: Env, to: Address, amount: u128) -> bool;
+    fn swap(e: Env, from: Address, token_in: Address, token_out: Address, amount_in: u128) -> u128;
+    fn get_balance(e: Env, account: Address) -> u128;
+    fn get_reserves(e: Env) -> (u128, u128);
+}
+
+#[contract]
+pub struct LiquidityPoolContract;
+
+#[contractimpl]
+impl LiquidityPoolContract {
+    pub fn deposit(env: Env, from: Address, amount: u128) -> bool {
+        // Validate the caller
+        from.require_auth();
+
+        // Transfer tokens from user to pool
+        let token = TokenClient::new(&env, &env.current_contract_address());
+        token.transfer(&from, &env.current_contract_address(), &amount);
+
+        // Mint LP tokens proportional to deposit
+        let total_supply = Self::total_supply(&env);
+        let lp_amount = if total_supply == 0 {
+            amount
+        } else {
+            let reserves = Self::get_reserves(&env);
+            (amount * total_supply) / reserves.0
+        };
+
+        Self::mint_lp_tokens(&env, &from, &lp_amount);
+        true
+    }
+
+    pub fn get_reserves(env: Env) -> (u128, u128) {
+        let reserve_a: u128 = env.storage().instance().get(&symbol_short!("res_a")).unwrap_or(0);
+        let reserve_b: u128 = env.storage().instance().get(&symbol_short!("res_b")).unwrap_or(0);
+        (reserve_a, reserve_b)
+    }
+}
+
+fn calculate_swap_output(
+    amount_in: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+) -> u128 {
+    // Constant product formula: x * y = k
+    let amount_in_with_fee = amount_in * 997;
+    let numerator = amount_in_with_fee * reserve_out;
+    let denominator = (reserve_in * 1000) + amount_in_with_fee;
+    numerator / denominator
+}`;
+
+  const sampleXdrData = `AAAAAgAAAABzdPocx0i4sJzFqNfRqI7Lq4G5GQ2xX0hYjK6Y5JXZzQAAAAoAAAAQAAAA
+AAAAAQAAAAAAAAAAAAAAAFz8rXsAAAAAMgAAAAAAAAABAAAABFRSQU5TRkVSAAAAAAAAAAEA
+AAAFAAAAAQAAABdUZXN0IFNvcm9iYW4gVHJhbnNmZXIAAAAAAAoAAAAEVXNkYwAAAAAAAAAA
+AAAAAAAFAAAAAQAAABdUZXN0IFNvcm9iYW4gVHJhbnNmZXIAAAAAAAoAAAAFeFNvbAAAAAAA
+AAAAAAFlZfTAAAAAAAAAAAIAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAFz8ra0AAAAAAAAAAQAA
+AARUUkFOU0ZFUgAAAAAAAAABAAAABQAAAAEAAAAXVGVzdCBTb3JvYmFuIFRyYW5zZmVyAAAA
+AAAKAAAABFVzZGMAAAAAAAAAAAAAAAAAAAAABQAAAAEAAAAXVGVzdCBTb3JvYmFuIFRyYW5z
+ZmVyAAAAAAAKAAAABXhTb2wAAAAAAAAAAAAAAAABZWX0wAAAAAAAAAACAAAAAAAAAAAAAAEA
+AAAAAAAAAAAAAABc/K2QAAAAAAAAAAEAAAAEVFJBTlNGRVIAAAAAAAAAAQAAAAUAAAABAAAA
+F1Rlc3QgU29yb2JhbiBUcmFuc2ZlcgAAAAAACgAAAARVc2RjAAAAAAAAAAAAAAAAAAAAAAUA
+AAABAAAAF1Rlc3QgU29yb2JhbiBUcmFuc2ZlcgAAAAAACgAAAAV4U29sAAAAAAAAAAAAAAAA
+AWVl9MAAAAAAAAAAAgAAAAAAAAAAAAABAAAAAAAAAAAAAAAAXPytoAAAAAAAAAABAAAABFRS
+QU5TRkVSAAAAAAAAAAEAAAAFAAAAAQAAABdUZXN0IFNvcm9iYW4gVHJhbnNmZXIAAAAAAAAK
+AAAABFVzZGMAAAAAAAAAAAAAAAAAAAAABQAAAAEAAAAXVGVzdCBTb3JvYmFuIFRyYW5zZmVy
+AAAAAAAKAAAABXhTb2wAAAAAAAAAAAAAAAABZWX0wAAAAAAAAAACAAAAAAAAAAAAAAEAAAAA
+AAAAAABc/K1gAAAAAAAAAAEAAAAEVFJBTlNGRVIAAAAAAAAAAQAAAAUAAAABAAAAF1Rlc3Qg
+U29yb2JhbiBUcmFuc2ZlcgAAAAAACgAAAARVc2RjAAAAAAAAAAAAAAAAAAAAAAUAAAABAAAA
+F1Rlc3QgU29yb2JhbiBUcmFuc2ZlcgAAAAAACgAAAAV4U29sAAAAAAAAAAAAAAAAAWVl9MAA`;
+
+  // Use result state snapshot or sample data
+  const displayCode = currentResult?.analysisReport?.state_snapshot
+    ? JSON.stringify(currentResult.analysisReport.state_snapshot.ledger_entries, null, 2)
+    : viewMode === "contract"
+      ? sampleContractSource
+      : sampleXdrData;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between text-left"
+        aria-expanded={expanded}
+        aria-controls="source-code-panel"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800">
+            <Code className="h-4 w-4 text-cyan-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-slate-200">
+              Contract Source &amp; XDR
+            </h3>
+            <p className="text-xs text-slate-500">
+              View contract source code and raw XDR transaction data
+            </p>
+          </div>
+        </div>
+        <span className="text-slate-500">
+          {expanded ? (
+            <ChevronDown className="h-5 w-5" />
+          ) : (
+            <ChevronRight className="h-5 w-5" />
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <div id="source-code-panel" className="mt-4 space-y-4">
+          {/* View toggle */}
+          <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
+            <button
+              type="button"
+              onClick={() => setViewMode("contract")}
+              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                viewMode === "contract"
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
+                  : "text-slate-400 hover:text-slate-300 border border-transparent"
+              }`}
+            >
+              <FileCode className="h-3.5 w-3.5" />
+              Contract Source
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("xdr")}
+              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                viewMode === "xdr"
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
+                  : "text-slate-400 hover:text-slate-300 border border-transparent"
+              }`}
+            >
+              <Code className="h-3.5 w-3.5" />
+              XDR View
+            </button>
+          </div>
+
+          {/* Syntax highlighted code */}
+          <SyntaxHighlighter
+            code={displayCode}
+            language={viewMode}
+            showLineNumbers
+            maxHeight="480px"
+          />
+        </div>
+      )}
+    </div>
   );
 }
