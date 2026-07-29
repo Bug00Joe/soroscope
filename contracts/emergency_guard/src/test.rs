@@ -212,11 +212,10 @@ fn test_guardian_can_trigger_emergency_pause() {
 }
 
 #[test]
-fn test_guardian_can_pause_specific_operation() {
+fn test_guardian_cannot_pause_specific_operation() {
     let (_env, client, _admins, guardian) = setup(2, 3);
-    client.set_pause(&guardian, &PauseType::TRANSFER, &true);
-    assert!(client.is_paused(&PauseType::TRANSFER));
-    assert!(!client.is_paused(&PauseType::SWAP));
+    let result = client.try_set_pause(&guardian, &PauseType::TRANSFER, &true);
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]
@@ -275,10 +274,10 @@ fn test_admin_can_pause_and_unpause_specific_operation() {
 }
 
 #[test]
-fn test_admin_can_trigger_emergency_pause() {
+fn test_admin_cannot_trigger_emergency_pause() {
     let (_env, client, admins, _guardian) = setup(1, 2);
-    client.emergency_pause(&admins[0]);
-    assert!(client.is_paused(&PauseType::MINT));
+    let result = client.try_emergency_pause(&admins[0]);
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]
