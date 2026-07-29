@@ -11,6 +11,7 @@ pub mod fee_store;
 mod gas_golfing;
 pub mod insights;
 mod jobs;
+mod leader_lock;
 mod merkle_tree;
 mod parser;
 mod routing;
@@ -2186,11 +2187,20 @@ async fn main() {
             request_timeout: std::time::Duration::from_secs(10),
         };
 
+        let leader_redis_client = redis::Client::open(config.redis_url.as_str())
+            .expect("Failed to create Redis client for leader lock");
+        let leader_lock = Arc::new(leader_lock::RedisLeaderLock::new(
+            leader_redis_client,
+            "soroscope:leader:fee_collector",
+            std::time::Duration::from_secs(config.fee_collection_interval_secs.max(1) * 3),
+        ));
+
         let collector = Arc::new(FeeCollector::new(
             Arc::clone(&registry),
             Arc::clone(&fee_store),
             collector_config,
             Arc::clone(&metrics),
+            leader_lock,
         ));
 
         tokio::spawn(async move {

@@ -1,4 +1,5 @@
 use crate::fee_store::{FeeStore, LedgerFeeSample};
+use crate::leader_lock::RedisLeaderLock;
 use crate::rpc_provider::ProviderRegistry;
 use crate::AppMetrics;
 use chrono::Utc;
@@ -56,6 +57,10 @@ pub struct FeeCollector {
     config: FeeCollectorConfig,
     last_collected_sequence: std::sync::atomic::AtomicU64,
     metrics: Arc<AppMetrics>,
+    /// Leader-election lease. Only the instance holding it persists ledger
+    /// fee samples, so running multiple Core instances doesn't cause
+    /// duplicate collection or racing writes to `FeeStore`.
+    leader_lock: Arc<RedisLeaderLock>,
 }
 
 impl FeeCollector {
@@ -65,6 +70,7 @@ impl FeeCollector {
         store: Arc<FeeStore>,
         config: FeeCollectorConfig,
         metrics: Arc<AppMetrics>,
+        leader_lock: Arc<RedisLeaderLock>,
     ) -> Self {
         Self {
             registry,
@@ -76,6 +82,7 @@ impl FeeCollector {
             config,
             last_collected_sequence: std::sync::atomic::AtomicU64::new(0),
             metrics,
+            leader_lock,
         }
     }
 
@@ -91,6 +98,11 @@ impl FeeCollector {
 
         loop {
             interval.tick().await;
+
+            if !self.leader_lock.try_acquire_or_renew().await {
+                tracing::debug!("not leader this cycle, skipping fee collection");
+                continue;
+            }
 
             let started_at = Instant::now();
             let result = self.collect_latest_fees().await;
