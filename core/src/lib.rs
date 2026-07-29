@@ -11,6 +11,7 @@ pub mod rpc_provider;
 pub mod runner;
 pub mod simulation;
 pub mod wasm_branch_analysis;
+pub mod webhooks;
 
 #[cfg(test)]
 pub mod fuzz_simulation;
