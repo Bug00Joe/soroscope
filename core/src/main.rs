@@ -50,7 +50,6 @@ use crate::fee_store::FeeStore;
 use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
-use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
@@ -882,13 +881,11 @@ async fn analyze(
                 tracing::warn!("No ledger entries available for Merkle tree generation");
                 None
             } else {
-                let mut tree = MerkleTree::new(256);
                 let mut tree = MerkleTree::new(32);
                 if let Err(e) = tree.build(leaves) {
                     tracing::error!("Failed to generate Merkle tree: {}", e);
                     None
                 } else {
-                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
                     tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count());
                     Some(tree.get_root_hex())
                 }
@@ -2070,6 +2067,9 @@ async fn main() {
     // ── WebSocket event bus ─────────────────────────────────────────────
     let simulation_bus = SimulationBus::new();
 
+    // Spawn background cleanup task
+    job_queue.spawn_cleanup_task();
+
     let job_worker = JobWorker::new(
         job_queue.clone(),
         SimulationEngine::with_registry_and_timeout_and_mode(
@@ -2084,32 +2084,6 @@ async fn main() {
 
     tokio::spawn(async move {
         job_worker.run().await;
-    });
-
-    // ── Distributed Job Queue Setup ─────────────────────────────────────
-    let job_config = JobQueueConfig {
-        job_timeout_secs: config.job_timeout_secs,
-        max_concurrent_jobs: config.max_concurrent_jobs,
-        ..Default::default()
-    };
-
-    let job_queue = JobQueue::new(&config.database_url, &config.redis_url, job_config.clone())
-        .await
-        .expect("Failed to initialize JobQueue");
-
-    // Spawn background cleanup task
-    job_queue.spawn_cleanup_task();
-
-    // Spawn worker
-    let worker = JobWorker::new(
-        job_queue.clone(),
-        SimulationEngine::with_registry_and_timeout(Arc::clone(&registry), simulation_timeout),
-        InsightsEngine::new(),
-        job_config,
-    );
-
-    tokio::spawn(async move {
-        worker.run().await;
     });
 
     tracing::info!("Job queue and worker started (Redis backend)");

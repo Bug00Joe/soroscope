@@ -367,7 +367,7 @@ impl JobQueue {
                     "#
                 )
                 .bind(&id.0.to_string())
-                .bind(format!("{:?}", job_type))
+                .bind(&job_type)
                 .bind("QUEUED")
                 .bind(&payload_json)
                 .bind(&webhook_url)
@@ -700,10 +700,38 @@ impl JobQueue {
                 .map_err(|_| JobError::ProcessingFailed("Invalid UUID".to_string()))?,
         );
 
+        let job_type_str: String = row.try_get("job_type")?;
+        let job_type = match job_type_str.as_str() {
+            "analyze" => JobType::Analyze,
+            "compare" => JobType::Compare,
+            "optimize_limits" => JobType::OptimizeLimits,
+            other => {
+                return Err(JobError::ProcessingFailed(format!(
+                    "Unknown job_type '{}'",
+                    other
+                )))
+            }
+        };
+
+        let status_str: String = row.try_get("status")?;
+        let status = match status_str.as_str() {
+            "QUEUED" => JobStatus::Queued,
+            "PROCESSING" => JobStatus::Processing,
+            "COMPLETED" => JobStatus::Completed,
+            "FAILED" => JobStatus::Failed,
+            "CANCELLED" => JobStatus::Cancelled,
+            other => {
+                return Err(JobError::ProcessingFailed(format!(
+                    "Unknown status '{}'",
+                    other
+                )))
+            }
+        };
+
         Ok(Job {
             id,
-            job_type: JobType::Analyze, // Simplified - would need proper parsing
-            status: JobStatus::Queued,  // Simplified - would need proper parsing
+            job_type,
+            status,
             payload: row.try_get("payload").unwrap_or_default(),
             result: row.try_get("result")?,
             progress_percent: row.try_get("progress_percent")?,

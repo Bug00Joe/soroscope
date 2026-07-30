@@ -4,7 +4,6 @@ pub mod errors;
 pub mod gas_golfing;
 pub mod insights;
 pub mod merkle_tree;
-pub mod merkle_tree;
 pub mod parser;
 pub mod routing;
 pub mod rpc_provider;
@@ -18,7 +17,4 @@ pub mod webhooks;
 #[cfg(test)]
 pub mod fuzz_simulation;
 #[cfg(test)]
-pub mod fuzz_simulation;
-#[cfg(test)]
-pub mod fuzz_tests;
 pub mod fuzz_tests;
