@@ -5,6 +5,7 @@
 //! signs each request, and retries transient failures with bounded exponential
 //! backoff.
 
+use crate::contract_registry::{verify_bytecode, ContractBytecodeSource, ContractRegister};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use reqwest::{Client, StatusCode, Url};
@@ -168,6 +169,8 @@ pub enum WebhookError {
     Serialization(#[from] serde_json::Error),
     #[error("webhook delivery failed after {attempts} attempts: {reason}")]
     DeliveryFailed { attempts: u32, reason: String },
+    #[error("event rejected by contract bytecode verification: {0}")]
+    BytecodeUnverified(String),
 }
 
 #[derive(Clone)]
@@ -181,6 +184,34 @@ impl WebhookSender {
             .send(event)
             .await
             .map_err(|_| WebhookError::QueueClosed)
+    }
+}
+
+/// Entry point for the event ingestion pipeline: verifies a contract event's
+/// live WASM bytecode hash against the whitelisted [`ContractRegister`]
+/// before allowing it into the dispatch queue, so a proxy contract spoofing
+/// a verified `contract_id` cannot have its events indexed.
+#[derive(Clone)]
+pub struct EventIngestor<S: ContractBytecodeSource + Clone> {
+    registry: ContractRegister,
+    source: S,
+    sender: WebhookSender,
+}
+
+impl<S: ContractBytecodeSource + Clone> EventIngestor<S> {
+    pub fn new(registry: ContractRegister, source: S, sender: WebhookSender) -> Self {
+        Self {
+            registry,
+            source,
+            sender,
+        }
+    }
+
+    pub async fn ingest(&self, event: ContractEvent) -> Result<(), WebhookError> {
+        verify_bytecode(&self.source, &self.registry, &event.contract_id)
+            .await
+            .map_err(|e| WebhookError::BytecodeUnverified(e.to_string()))?;
+        self.sender.enqueue(event).await
     }
 }
 
@@ -321,6 +352,63 @@ mod tests {
             payload: json!({"amount": "42"}),
             occurred_at: Utc::now(),
         }
+    }
+
+    #[derive(Clone)]
+    struct FakeBytecodeSource {
+        wasm_by_contract: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    impl ContractBytecodeSource for FakeBytecodeSource {
+        async fn fetch_wasm(&self, contract_id: &str) -> Result<Vec<u8>, String> {
+            self.wasm_by_contract
+                .get(contract_id)
+                .cloned()
+                .ok_or_else(|| format!("no wasm registered for {contract_id}"))
+        }
+    }
+
+    fn hash_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[tokio::test]
+    async fn ingestor_enqueues_events_whose_bytecode_matches_the_whitelist() {
+        let wasm = b"verified-wasm".to_vec();
+        let source = FakeBytecodeSource {
+            wasm_by_contract: std::collections::HashMap::from([("CABC".to_string(), wasm.clone())]),
+        };
+        let registry = ContractRegister::new(std::collections::HashMap::from([(
+            "CABC".to_string(),
+            hash_hex(&wasm),
+        )]));
+        let (tx, mut rx) = mpsc::channel(1);
+        let ingestor = EventIngestor::new(registry, source, WebhookSender { tx });
+
+        ingestor.ingest(event("transfer")).await.unwrap();
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn ingestor_rejects_events_from_an_unwhitelisted_or_spoofed_contract() {
+        let source = FakeBytecodeSource {
+            wasm_by_contract: std::collections::HashMap::from([(
+                "CABC".to_string(),
+                b"proxy-wasm".to_vec(),
+            )]),
+        };
+        let registry = ContractRegister::new(std::collections::HashMap::from([(
+            "CABC".to_string(),
+            hash_hex(b"real-wasm"),
+        )]));
+        let (tx, mut rx) = mpsc::channel(1);
+        let ingestor = EventIngestor::new(registry, source, WebhookSender { tx });
+
+        let err = ingestor.ingest(event("transfer")).await.unwrap_err();
+        assert!(matches!(err, WebhookError::BytecodeUnverified(_)));
+        rx.close();
+        assert!(rx.recv().await.is_none());
     }
 
     #[test]
