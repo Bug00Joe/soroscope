@@ -21,12 +21,15 @@ mod simulation;
 mod simulation_service;
 mod trace_propagation;
 mod wasm_branch_analysis;
+mod webhooks;
+mod webhook_validation;
 mod ws;
+
+use crate::webhook_validation::ValidatedWebhook;
 
 use crate::cache::{ContractCache, SimulationCache};
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
-use crate::merkle_tree::MerkleTree;
 use axum::{
     extract::{Json, Multipart, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
@@ -112,6 +115,9 @@ struct AppConfig {
     /// Database URL for job queue (PostgreSQL or SQLite)
     #[serde(default = "default_database_url")]
     database_url: String,
+    /// Pre-shared secret for inbound webhook HMAC validation.
+    #[serde(default = "default_inbound_webhook_secret")]
+    inbound_webhook_secret: String,
     /// Job timeout in seconds (default 300).
     #[serde(default = "default_job_timeout_secs")]
     job_timeout_secs: u64,
@@ -160,6 +166,10 @@ fn default_gossip_interval_secs() -> u64 {
 
 fn default_database_url() -> String {
     "sqlite://soroscope.db".to_string()
+}
+
+fn default_inbound_webhook_secret() -> String {
+    String::new()
 }
 
 fn default_job_timeout_secs() -> u64 {
@@ -215,6 +225,7 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("simulation_timeout_secs", 30)?
         .set_default("simulation_mode", "failover")?
         .set_default("database_url", "sqlite://soroscope.db")?
+        .set_default("inbound_webhook_secret", "")?
         .set_default("job_timeout_secs", 300)?
         .set_default("max_concurrent_jobs", 10)?
         .set_default("fee_collection_interval_secs", 5)?
@@ -1682,6 +1693,13 @@ fn group_batch_entries(
     }
 }
 
+async fn incoming_webhook(
+    ValidatedWebhook(body): ValidatedWebhook,
+) -> impl IntoResponse {
+    tracing::info!("Received authenticated inbound webhook of length {}", body.len());
+    StatusCode::OK
+}
+
 async fn health_check() -> &'static str {
     "OK"
 }
@@ -1728,6 +1746,11 @@ async fn main() {
         redis_url = %config.redis_url,
         "Cache config: using in-memory (moka) MVP; Redis URL reserved for future migration"
     );
+    if config.inbound_webhook_secret.is_empty() {
+        tracing::warn!(
+            "Inbound webhook secret is not configured; set INBOUND_WEBHOOK_SECRET or SOROSCOPE_INBOUND_WEBHOOK_SECRET"
+        );
+    }
 
     let args: Vec<String> = env::args().collect();
 
@@ -2211,8 +2234,13 @@ async fn main() {
         // WebSocket streaming (Issue #105) — no auth required on the upgrade;
         // the client passes the job_id in the path.
         .route("/ws/jobs/:job_id", get(ws::ws_handler))
+        // Inbound webhooks signature validation (Issue #582)
+        .route("/api/v1/webhooks/incoming", post(incoming_webhook))
         .merge(protected)
         .layer(Extension(auth_state))
+        .layer(Extension(webhook_validation::InboundWebhookSecret(Arc::new(
+            config.inbound_webhook_secret.clone(),
+        ))))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app_state); // ← thread AppState through all handlers
@@ -2433,9 +2461,12 @@ mod tests {
         let protected = Router::new()
             .route("/analyze/wasm/profile", post(analyze_wasm_profile))
             .route_layer(middleware::from_fn(auth::auth_middleware));
+        let webhook_secret = Arc::new("a-secret-that-is-at-least-thirty-two-bytes".to_string());
         Router::new()
+            .route("/api/v1/webhooks/incoming", post(incoming_webhook))
             .merge(protected)
             .layer(Extension(auth_state))
+            .layer(Extension(webhook_validation::InboundWebhookSecret(webhook_secret)))
             .with_state(app_state)
     }
 

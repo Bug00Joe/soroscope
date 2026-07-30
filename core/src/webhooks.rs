@@ -7,12 +7,12 @@
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
+use reqwest::{Client, StatusCode};
 use tokio::{
     sync::{mpsc, RwLock},
     task::JoinHandle,
@@ -31,7 +31,7 @@ pub struct ContractSubscription {
     pub contract_id: String,
     /// Empty means every event emitted by the contract.
     pub event_types: Vec<String>,
-    pub callback_url: Url,
+    pub callback_url: String,
     /// Kept server-side and never serialized into delivery payloads.
     #[serde(skip_serializing)]
     pub signing_secret: String,
@@ -42,17 +42,18 @@ impl ContractSubscription {
     pub fn new(
         contract_id: impl Into<String>,
         event_types: Vec<String>,
-        callback_url: Url,
+        callback_url: impl Into<String>,
         signing_secret: impl Into<String>,
     ) -> Result<Self, WebhookError> {
         let contract_id = contract_id.into();
+        let callback_url = callback_url.into();
         let signing_secret = signing_secret.into();
         if contract_id.trim().is_empty() {
             return Err(WebhookError::InvalidSubscription(
                 "contract_id cannot be empty".into(),
             ));
         }
-        if !matches!(callback_url.scheme(), "http" | "https") {
+        if !(callback_url.starts_with("http://") || callback_url.starts_with("https://")) {
             return Err(WebhookError::InvalidSubscription(
                 "callback_url must use http or https".into(),
             ));
@@ -340,14 +341,14 @@ mod tests {
         let transfer = ContractSubscription::new(
             "CABC",
             vec!["transfer".into()],
-            Url::parse("https://example.com/events").unwrap(),
+            "https://example.com/events",
             "a-secret-that-is-at-least-thirty-two-bytes",
         )
         .unwrap();
         let mut inactive = ContractSubscription::new(
             "CABC",
             Vec::new(),
-            Url::parse("https://example.com/all").unwrap(),
+            "https://example.com/all",
             "another-secret-that-is-at-least-32-bytes",
         )
         .unwrap();
@@ -377,7 +378,7 @@ mod tests {
         let result = ContractSubscription::new(
             "",
             Vec::new(),
-            Url::parse("https://example.com").unwrap(),
+            "https://example.com",
             "short",
         );
         assert!(matches!(result, Err(WebhookError::InvalidSubscription(_))));
@@ -430,7 +431,7 @@ mod tests {
         let subscription = ContractSubscription::new(
             "CABC",
             Vec::new(),
-            Url::parse(&format!("http://{address}/events")).unwrap(),
+            format!("http://{address}/events"),
             secret.as_str(),
         )
         .unwrap();
