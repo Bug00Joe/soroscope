@@ -19,6 +19,7 @@ mod rpc_throttle;
 mod runner;
 mod simulation;
 mod simulation_service;
+mod task_queue;
 mod trace_propagation;
 mod wasm_branch_analysis;
 mod ws;

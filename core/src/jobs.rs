@@ -7,6 +7,7 @@
 
 use crate::insights::InsightsEngine;
 use crate::simulation::{SimulationEngine, SimulationResult, SorobanResources};
+use crate::task_queue::{BoundedTaskDispatcher, TaskPriority};
 use crate::ws::SimulationBus;
 use crate::AppError;
 use axum::{
@@ -253,6 +254,12 @@ pub struct JobQueueConfig {
     pub webhook_max_retries: u32,
     pub max_concurrent_jobs: usize,
     pub max_job_retries: i32,
+    /// Maximum number of retry-scheduling tasks that may be in flight at
+    /// once. Retry scheduling is best-effort background work: once this
+    /// cap is hit, further retries are dropped (and the job stays queued
+    /// for the next cleanup/requeue pass) rather than piling up spawned
+    /// tasks without bound under a sustained failure storm.
+    pub retry_queue_capacity: usize,
 }
 
 impl Default for JobQueueConfig {
@@ -265,6 +272,7 @@ impl Default for JobQueueConfig {
             webhook_max_retries: 3,
             max_concurrent_jobs: 10,
             max_job_retries: 3,
+            retry_queue_capacity: 256,
         }
     }
 }
@@ -274,6 +282,7 @@ pub struct JobQueue {
     pool: DbPool,
     redis: RedisClient,
     config: JobQueueConfig,
+    retry_dispatcher: BoundedTaskDispatcher,
 }
 
 impl JobQueue {
@@ -297,10 +306,13 @@ impl JobQueue {
         // Run migrations
         Self::run_migrations(&pool).await?;
 
+        let retry_dispatcher = BoundedTaskDispatcher::new(config.retry_queue_capacity);
+
         Ok(Self {
             pool,
             redis,
             config,
+            retry_dispatcher,
         })
     }
 
@@ -656,17 +668,29 @@ impl JobQueue {
 
         // Push back to Redis queue after delay (using a simple sleep for now or a delayed set)
         // For a robust implementation, we'd use a sorted set for delayed jobs.
-        // For now, let's just push it back to the queue.
+        // Retry scheduling is best-effort background work: dispatch it through
+        // the bounded task queue (as `Low` priority) so a sustained failure
+        // storm can't spawn an unbounded number of pending sleep-then-requeue
+        // tasks. If the dispatcher is saturated, the retry is dropped — the
+        // job stays QUEUED in the database and will still be picked up by a
+        // subsequent cleanup/requeue pass.
         let queue = self.clone();
         let id_str = job.id.0.to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-            let mut conn = match queue.redis.get_multiplexed_async_connection().await {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let _: Result<(), _> = conn.lpush("soroscope:jobs:queue", id_str).await;
-        });
+        let outcome = self
+            .retry_dispatcher
+            .dispatch(TaskPriority::Low, async move {
+                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                let mut conn = match queue.redis.get_multiplexed_async_connection().await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let _: Result<(), _> = conn.lpush("soroscope:jobs:queue", id_str).await;
+            })
+            .await;
+
+        if outcome == crate::task_queue::DispatchOutcome::Dropped {
+            tracing::warn!(job_id = %job.id, "Retry dispatcher saturated; retry scheduling dropped for this attempt");
+        }
 
         tracing::info!(job_id = %job.id, retry_count = new_retry_count, delay_secs, "Job scheduled for retry");
         Ok(())
@@ -757,6 +781,7 @@ impl Clone for JobQueue {
             pool: self.pool.clone(),
             redis: self.redis.clone(),
             config: self.config.clone(),
+            retry_dispatcher: self.retry_dispatcher.clone(),
         }
     }
 }

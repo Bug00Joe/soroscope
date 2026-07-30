@@ -11,6 +11,7 @@ pub mod rpc_provider;
 pub mod rpc_throttle;
 pub mod runner;
 pub mod simulation;
+pub mod task_queue;
 pub mod trace_propagation;
 pub mod wasm_branch_analysis;
 pub mod webhooks;
