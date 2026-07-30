@@ -228,6 +228,63 @@ fn load_config() -> Result<AppConfig, ConfigError> {
     settings.try_deserialize()
 }
 
+/// Build the tracing `EnvFilter` from the configured log directive
+/// (`RUST_LOG`, defaulting to `"info"` — see [`AppConfig::rust_log`]).
+///
+/// Supports the standard `tracing_subscriber` directive syntax, including
+/// per-module overrides (e.g. `soroscope_core=debug,tower_http=warn`). An
+/// empty or unparsable directive falls back to `"info"` so a startup typo
+/// degrades verbosity instead of crashing the server.
+fn build_env_filter(directive: &str) -> EnvFilter {
+    let directive = directive.trim();
+    let directive = if directive.is_empty() {
+        "info"
+    } else {
+        directive
+    };
+
+    EnvFilter::try_new(directive).unwrap_or_else(|error| {
+        eprintln!("Invalid RUST_LOG directive '{directive}': {error}. Falling back to 'info'.");
+        EnvFilter::new("info")
+    })
+}
+
+#[cfg(test)]
+mod log_filter_tests {
+    use super::build_env_filter;
+
+    #[test]
+    fn empty_directive_falls_back_to_info() {
+        assert_eq!(build_env_filter("").to_string(), "info");
+    }
+
+    #[test]
+    fn blank_directive_falls_back_to_info() {
+        assert_eq!(build_env_filter("   ").to_string(), "info");
+    }
+
+    #[test]
+    fn valid_directive_is_used_verbatim() {
+        assert_eq!(build_env_filter("debug").to_string(), "debug");
+    }
+
+    #[test]
+    fn per_module_directives_are_supported() {
+        let filter = build_env_filter("soroscope_core=debug,tower_http=warn");
+        let rendered = filter.to_string();
+        assert!(rendered.contains("soroscope_core=debug"));
+        assert!(rendered.contains("tower_http=warn"));
+    }
+
+    #[test]
+    fn invalid_directive_falls_back_to_info_instead_of_panicking() {
+        assert_eq!(
+            build_env_filter("soroscope_core=not_a_real_level").to_string(),
+            "info"
+        );
+    }
+}
+
 /// Parse the `RPC_PROVIDERS` env var (JSON array) or fall back to wrapping the
 /// single `SOROBAN_RPC_URL` into a one-element provider list.
 fn build_providers(config: &AppConfig) -> Vec<RpcProvider> {
@@ -1709,18 +1766,18 @@ async fn main() {
     opentelemetry::global::set_text_map_propagator(
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "info");
-    }
+
+    // Config is loaded before the tracing subscriber so `rust_log` (sourced
+    // from the `RUST_LOG` env var, defaulting to "info") can drive log level
+    // filtering without recompiling the binary.
+    let config = load_config().expect("Failed to load configuration");
 
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
+        .with(build_env_filter(&config.rust_log))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("SoroScope Starting...");
-
-    let config = load_config().expect("Failed to load configuration");
+    tracing::info!(rust_log = %config.rust_log, "SoroScope Starting...");
     tracing::info!("SoroScope initialized with config: {:?}", config);
     tracing::info!(
         redis_url = %config.redis_url,
