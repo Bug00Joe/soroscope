@@ -35,8 +35,11 @@ This guide covers setting up your environment and the development standards we f
 ### Frontend (Next.js)
 - **Styling**: Use Tailwind CSS for consistency.
 - **Linting**: Run `npm run lint` within the `/web` directory.
+- **Testing**: Run `npm test` within the `/web` directory to run unit tests.
 - **Components**: Keep components modular and placed in `/web/components`.
+- **Error Handling**: Standardized Soroban error codes (1..17 and domain codes 100+) are automatically decoded from raw `HostError` strings into human-readable user messages via `web/lib/errorHandling.ts` and displayed in invocation toasts.
 
 ### Contracts
 - Use **Soroban SDK v22.0.0** or higher.
 - Avoid deprecated methods like `register_contract` (use `register` instead).
+

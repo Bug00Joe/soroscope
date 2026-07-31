@@ -12,6 +12,7 @@ import type { ContractFunction, InvocationResult } from '../lib/sorobantypes';
 import { UploadZone } from '../components/upload-zone';
 import { extractErrorDetails, createUserFriendlyMessage } from '../lib/errorHandling';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { Toast } from '../components/Toast';
 
 export default function Home() {
   const [contractId, setContractId] = useState('CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q');
@@ -22,6 +23,8 @@ export default function Home() {
   const { history, addToHistory } = useInvocationHistory();
   const [wasmFile, setWasmFile] = useState<File | null>(null);
   const [wasmData, setWasmData] = useState<string | null>(null);
+  const [toastNotification, setToastNotification] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
+
 
   const handleSimulate = async (inputs: Record<string, any>, customWasmData?: string) => {
     setLoading(true);
@@ -82,6 +85,7 @@ export default function Home() {
       };
       setCurrentResult(errorResult);
       addToHistory(errorResult);
+      setToastNotification({ message: errorMessage, type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -428,6 +432,13 @@ export default function Home() {
       </main>
       {/* Wallet Modal */}
       <WalletModal />
+      {toastNotification && (
+        <Toast
+          message={toastNotification.message}
+          type={toastNotification.type}
+          onClose={() => setToastNotification(null)}
+        />
+      )}
     </div>
     </>
   );
