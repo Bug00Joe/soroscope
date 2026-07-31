@@ -102,7 +102,7 @@ pub enum JobStatus {
 }
 
 /// Type of analysis job
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, sqlx::Type)]
 #[sqlx(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum JobType {
@@ -135,6 +135,36 @@ pub enum JobPayload {
         args: Vec<String>,
         safety_margin: f64,
     },
+}
+
+impl JobPayload {
+    /// The contract this job targets, if any (`Compare` in `local_vs_local`
+    /// mode has no contract).
+    pub fn contract_id(&self) -> Option<&str> {
+        match self {
+            JobPayload::Analyze { contract_id, .. } => Some(contract_id),
+            JobPayload::OptimizeLimits { contract_id, .. } => Some(contract_id),
+            JobPayload::Compare { contract_id, .. } => contract_id.as_deref(),
+        }
+    }
+
+    /// The contract function this job invokes, if any.
+    pub fn function_name(&self) -> Option<&str> {
+        match self {
+            JobPayload::Analyze { function_name, .. } => Some(function_name),
+            JobPayload::OptimizeLimits { function_name, .. } => Some(function_name),
+            JobPayload::Compare { function_name, .. } => function_name.as_deref(),
+        }
+    }
+}
+
+/// Filters accepted by [`JobQueue::list`] when browsing contract execution
+/// history.
+#[derive(Debug, Clone, Default)]
+pub struct JobListFilter {
+    pub status: Option<JobStatus>,
+    pub job_type: Option<JobType>,
+    pub contract_id: Option<String>,
 }
 
 /// Progress information for a job
@@ -452,6 +482,113 @@ impl JobQueue {
             };
 
         Ok(job)
+    }
+
+    /// List jobs (contract execution history), most-recently-created first,
+    /// with optional filtering and offset/limit pagination. Used by the
+    /// GraphQL `contractExecutions` query.
+    ///
+    /// `status` and `job_type` are applied as indexed SQL predicates.
+    /// `contract_id` lives inside the JSON `payload` column rather than an
+    /// indexed one, so it is applied in-memory after the page is fetched —
+    /// a page may return fewer than `limit` rows when combined with a
+    /// `contract_id` filter.
+    pub async fn list(
+        &self,
+        filter: &JobListFilter,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Job>, JobError> {
+        let limit = limit.clamp(1, 200);
+        let offset = offset.max(0);
+
+        let mut jobs = match &self.pool {
+            DbPool::Postgres(pool) => match (&filter.status, &filter.job_type) {
+                (Some(status), Some(job_type)) => sqlx::query_as::<_, Job>(
+                    "SELECT * FROM jobs WHERE status = $1 AND job_type = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+                )
+                .bind(status)
+                .bind(job_type)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?,
+                (Some(status), None) => sqlx::query_as::<_, Job>(
+                    "SELECT * FROM jobs WHERE status = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                )
+                .bind(status)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?,
+                (None, Some(job_type)) => sqlx::query_as::<_, Job>(
+                    "SELECT * FROM jobs WHERE job_type = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                )
+                .bind(job_type)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?,
+                (None, None) => sqlx::query_as::<_, Job>(
+                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                )
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?,
+            },
+            DbPool::Sqlite(pool) => {
+                let rows = match (&filter.status, &filter.job_type) {
+                    (Some(status), Some(job_type)) => sqlx::query(
+                        "SELECT * FROM jobs WHERE status = ?1 AND job_type = ?2 ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
+                    )
+                    .bind(status)
+                    .bind(job_type)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(pool)
+                    .await?,
+                    (Some(status), None) => sqlx::query(
+                        "SELECT * FROM jobs WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                    )
+                    .bind(status)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(pool)
+                    .await?,
+                    (None, Some(job_type)) => sqlx::query(
+                        "SELECT * FROM jobs WHERE job_type = ?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                    )
+                    .bind(job_type)
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(pool)
+                    .await?,
+                    (None, None) => sqlx::query(
+                        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+                    )
+                    .bind(limit)
+                    .bind(offset)
+                    .fetch_all(pool)
+                    .await?,
+                };
+
+                rows.iter()
+                    .map(|row| self.row_to_job(row))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
+
+        if let Some(contract_id) = &filter.contract_id {
+            jobs.retain(|job| {
+                job.get_payload()
+                    .and_then(|payload| payload.contract_id().map(str::to_string))
+                    .as_deref()
+                    == Some(contract_id.as_str())
+            });
+        }
+
+        Ok(jobs)
     }
 
     /// Mark a job as processing
@@ -1311,5 +1448,219 @@ impl JobWorker {
         }
 
         tracing::error!(job_id = %job_id, error = ?last_error, "Webhook failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `JobQueue::new` runs the checked-in Postgres-dialect migration SQL
+    // (`CREATE OR REPLACE FUNCTION ... plpgsql`), which SQLite cannot parse.
+    // These tests exercise `list`/`row_to_job` directly against a hand-rolled
+    // SQLite-compatible schema instead, so they cover the actual query and
+    // row-mapping logic without depending on that unrelated, pre-existing
+    // migration gap.
+    async fn sqlite_pool_with_jobs_table() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE jobs (
+                id TEXT PRIMARY KEY,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'QUEUED',
+                payload TEXT NOT NULL,
+                result TEXT,
+                progress_percent INTEGER NOT NULL DEFAULT 0,
+                progress_message TEXT NOT NULL DEFAULT 'Queued',
+                webhook_url TEXT,
+                webhook_headers TEXT,
+                webhook_secret TEXT,
+                error_message TEXT,
+                error_type TEXT,
+                timeout_secs INTEGER NOT NULL DEFAULT 300,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create jobs table");
+        pool
+    }
+
+    fn test_queue(pool: sqlx::SqlitePool) -> JobQueue {
+        JobQueue {
+            pool: DbPool::Sqlite(pool),
+            redis: RedisClient::open("redis://127.0.0.1:6379").expect("parse redis url"),
+            config: JobQueueConfig::default(),
+            retry_dispatcher: crate::task_queue::BoundedTaskDispatcher::new(8),
+        }
+    }
+
+    async fn insert_job(
+        pool: &sqlx::SqlitePool,
+        job_type: &JobType,
+        status: &str,
+        payload: &JobPayload,
+    ) -> JobId {
+        let id = JobId::new();
+        let now = Utc::now().to_rfc3339();
+        let payload_json = serde_json::to_value(payload).unwrap();
+        sqlx::query(
+            "INSERT INTO jobs (id, job_type, status, payload, progress_message, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'Queued', ?5, ?5)",
+        )
+        .bind(id.0.to_string())
+        .bind(job_type)
+        .bind(status)
+        .bind(payload_json)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert job");
+        id
+    }
+
+    fn analyze_payload(contract_id: &str) -> JobPayload {
+        JobPayload::Analyze {
+            contract_id: contract_id.to_string(),
+            function_name: "hello".to_string(),
+            args: None,
+            ledger_overrides: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_round_trips_job_type_and_status_from_sqlite() {
+        let pool = sqlite_pool_with_jobs_table().await;
+        insert_job(
+            &pool,
+            &JobType::OptimizeLimits,
+            "COMPLETED",
+            &JobPayload::OptimizeLimits {
+                contract_id: "CABC".into(),
+                function_name: "swap".into(),
+                args: vec![],
+                safety_margin: 0.05,
+            },
+        )
+        .await;
+        let queue = test_queue(pool);
+
+        let jobs = queue
+            .list(&JobListFilter::default(), 10, 0)
+            .await
+            .expect("list should succeed");
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, JobType::OptimizeLimits);
+        assert_eq!(jobs[0].status, JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_status_and_job_type() {
+        let pool = sqlite_pool_with_jobs_table().await;
+        insert_job(
+            &pool,
+            &JobType::Analyze,
+            "COMPLETED",
+            &analyze_payload("CABC"),
+        )
+        .await;
+        insert_job(&pool, &JobType::Analyze, "FAILED", &analyze_payload("CXYZ")).await;
+        let queue = test_queue(pool);
+
+        let completed = queue
+            .list(
+                &JobListFilter {
+                    status: Some(JobStatus::Completed),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].status, JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_contract_id() {
+        let pool = sqlite_pool_with_jobs_table().await;
+        insert_job(
+            &pool,
+            &JobType::Analyze,
+            "COMPLETED",
+            &analyze_payload("CABC"),
+        )
+        .await;
+        insert_job(
+            &pool,
+            &JobType::Analyze,
+            "COMPLETED",
+            &analyze_payload("CXYZ"),
+        )
+        .await;
+        let queue = test_queue(pool);
+
+        let filtered = queue
+            .list(
+                &JobListFilter {
+                    contract_id: Some("CXYZ".to_string()),
+                    ..Default::default()
+                },
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].get_payload().unwrap().contract_id(),
+            Some("CXYZ".to_string()).as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_respects_limit_and_offset() {
+        let pool = sqlite_pool_with_jobs_table().await;
+        for i in 0..5 {
+            insert_job(
+                &pool,
+                &JobType::Analyze,
+                "COMPLETED",
+                &analyze_payload(&format!("C{i}")),
+            )
+            .await;
+        }
+        let queue = test_queue(pool);
+
+        let page = queue.list(&JobListFilter::default(), 2, 1).await.unwrap();
+        assert_eq!(page.len(), 2);
+    }
+
+    #[test]
+    fn job_payload_contract_id_and_function_name_accessors() {
+        let analyze = analyze_payload("CABC");
+        assert_eq!(analyze.contract_id(), Some("CABC"));
+        assert_eq!(analyze.function_name(), Some("hello"));
+
+        let compare_local = JobPayload::Compare {
+            mode: "local_vs_local".into(),
+            current_wasm: None,
+            base_wasm: None,
+            contract_id: None,
+            function_name: None,
+            args: vec![],
+        };
+        assert_eq!(compare_local.contract_id(), None);
     }
 }

@@ -9,6 +9,7 @@ pub mod fee_analytics;
 pub mod fee_collector;
 pub mod fee_store;
 mod gas_golfing;
+mod graphql;
 pub mod insights;
 mod jobs;
 mod merkle_tree;
@@ -2210,6 +2211,12 @@ async fn main() {
         simulation_bus,
     });
 
+    // ── GraphQL query layer (Issue #579) ─────────────────────────────────
+    // Assembles contract execution history and token metadata in a single
+    // query instead of multiple REST round-trips.
+    let graphql_schema =
+        graphql::build_schema(app_state.job_queue.clone(), app_state.engine.clone());
+
     let cors = CorsLayer::new().allow_origin(Any);
 
     let protected = Router::new()
@@ -2243,8 +2250,14 @@ async fn main() {
         // WebSocket streaming (Issue #105) — no auth required on the upgrade;
         // the client passes the job_id in the path.
         .route("/ws/jobs/:job_id", get(ws::ws_handler))
+        // GraphQL contract execution history + token metadata query layer.
+        .route(
+            "/graphql",
+            get(graphql::graphql_playground).post(graphql::graphql_handler),
+        )
         .merge(protected)
         .layer(Extension(auth_state))
+        .layer(Extension(graphql_schema))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(app_state); // ← thread AppState through all handlers

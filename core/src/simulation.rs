@@ -1337,6 +1337,76 @@ impl SimulationEngine {
         Ok(wasm_bytes)
     }
 
+    /// Invoke a read-only, zero-argument contract function and return its
+    /// decoded return value, without computing full resource metrics.
+    ///
+    /// Used by the GraphQL token metadata query to assemble a SEP-41
+    /// token's `name`/`symbol`/`decimals` from three simulated invocations
+    /// in a single request instead of three separate `/analyze` REST
+    /// round-trips. Returns `Ok(None)` if the simulation produced no
+    /// result entry (e.g. the function returns `void`).
+    pub async fn invoke_read_only(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+    ) -> Result<Option<soroban_sdk::xdr::ScVal>, SimulationError> {
+        let transaction_xdr = self.create_invoke_transaction(contract_id, function_name, vec![])?;
+
+        let (url, auth_header, auth_value) = match &self.registry {
+            Some(reg) => {
+                let p = reg
+                    .healthy_providers()
+                    .await
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        SimulationError::RpcRequestFailed("No healthy providers".to_string())
+                    })?;
+                (p.url.clone(), p.auth_header.clone(), p.auth_value.clone())
+            }
+            None => (self.rpc_url.clone(), None, None),
+        };
+
+        let request = SimulateTransactionRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "simulateTransaction".to_string(),
+            params: SimulateTransactionParams {
+                transaction: transaction_xdr,
+            },
+        };
+
+        let mut req_builder = self.client.post(&url).json(&request);
+        if let (Some(header), Some(value)) = (auth_header.as_deref(), auth_value.as_deref()) {
+            req_builder = req_builder.header(header, value);
+        }
+        self.rpc_throttle.wait().await;
+        let response = req_builder.send().await?;
+        self.rpc_throttle.observe(response.headers()).await;
+        let response: SimulateTransactionResponse = response
+            .json()
+            .await
+            .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
+
+        let result = match response.result {
+            ResponseResult::Success { result } => result,
+            ResponseResult::Error { error } => {
+                return Err(SimulationError::NodeError(error.message))
+            }
+        };
+
+        let Some(first) = result.results.first() else {
+            return Ok(None);
+        };
+        let xdr_b64 = first.get("xdr").and_then(|v| v.as_str()).ok_or_else(|| {
+            SimulationError::InvalidContract("Missing return value XDR".to_string())
+        })?;
+        let bytes = BASE64.decode(xdr_b64)?;
+        let scval = soroban_sdk::xdr::ScVal::from_xdr(&bytes, Limits::none())
+            .map_err(|e| SimulationError::XdrError(e.to_string()))?;
+        Ok(Some(scval))
+    }
+
     /// Simulate transaction from a deployed contract ID
     ///
     /// # Arguments
