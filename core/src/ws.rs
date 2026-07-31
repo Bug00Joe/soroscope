@@ -46,6 +46,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::jobs::JobId;
+use crate::trace_propagation::TracedMessage;
 
 // ── Channel capacity ─────────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ impl SimulationEvent {
 /// async context and [`SimulationBus::subscribe`] to get a receiver.
 #[derive(Clone)]
 pub struct SimulationBus {
-    sender: broadcast::Sender<SimulationEvent>,
+    sender: broadcast::Sender<TracedMessage<SimulationEvent>>,
 }
 
 impl SimulationBus {
@@ -174,12 +175,12 @@ impl SimulationBus {
     /// Publish an event.  Returns the number of active subscribers that
     /// received it (0 if nobody is listening, which is perfectly fine).
     pub fn publish(&self, event: SimulationEvent) -> usize {
-        self.sender.send(event).unwrap_or(0)
+        self.sender.send(TracedMessage::capture(event)).unwrap_or(0)
     }
 
     /// Subscribe to the bus.  The returned receiver will lag (and skip events)
     /// if it cannot keep up with the publication rate.
-    pub fn subscribe(&self) -> broadcast::Receiver<SimulationEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<TracedMessage<SimulationEvent>> {
         self.sender.subscribe()
     }
 
@@ -230,7 +231,11 @@ impl SimulationBus {
         }
     }
 
-    pub fn completed(job_id: &JobId, resources: &crate::simulation::SorobanResources, cost_stroops: u64) -> SimulationEvent {
+    pub fn completed(
+        job_id: &JobId,
+        resources: &crate::simulation::SorobanResources,
+        cost_stroops: u64,
+    ) -> SimulationEvent {
         SimulationEvent::Completed {
             job_id: job_id.to_string(),
             data: CompletedPayload {
@@ -301,7 +306,11 @@ async fn handle_socket(mut socket: WebSocket, job_id: String, state: Arc<crate::
             // Receive next event from the bus
             result = rx.recv() => {
                 match result {
-                    Ok(event) => {
+                    Ok(message) => {
+                        let dispatch_span = tracing::info_span!("simulation_event_dispatch");
+                        message.set_parent(&dispatch_span);
+                        let _dispatch_guard = dispatch_span.enter();
+                        let event = message.payload;
                         // Only forward events belonging to the requested job
                         if event.job_id() != job_id {
                             continue;
@@ -379,8 +388,8 @@ mod tests {
         bus.publish(event);
 
         let received = rx.recv().await.expect("should receive event");
-        assert_eq!(received.job_id(), fake_id.to_string());
-        assert!(!received.is_terminal());
+        assert_eq!(received.payload.job_id(), fake_id.to_string());
+        assert!(!received.payload.is_terminal());
     }
 
     #[tokio::test]
@@ -407,12 +416,8 @@ mod tests {
     #[tokio::test]
     async fn event_json_round_trips() {
         let fake_id = JobId::new();
-        let event = SimulationBus::provider_failover(
-            &fake_id,
-            "primary-node",
-            "backup-node",
-            "timeout",
-        );
+        let event =
+            SimulationBus::provider_failover(&fake_id, "primary-node", "backup-node", "timeout");
         let json = serde_json::to_string(&event).expect("serialise");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed["event"], "provider_failover");
@@ -425,7 +430,11 @@ mod tests {
         let event = SimulationBus::consensus_check(
             &fake_id,
             true,
-            vec!["node-a".to_string(), "node-b".to_string(), "node-c".to_string()],
+            vec![
+                "node-a".to_string(),
+                "node-b".to_string(),
+                "node-c".to_string(),
+            ],
             None,
         );
         let json = serde_json::to_string(&event).expect("serialise");

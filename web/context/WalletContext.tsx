@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { useNetwork, NetworkId } from "./NetworkContext";
 
 interface WalletContextType {
   connect: (moduleId: string) => Promise<void>;
@@ -27,6 +28,7 @@ export const useWallet = () => {
 };
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
+  const { networkId } = useNetwork();
   const [address, setAddress] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
@@ -39,8 +41,13 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
       try {
         const walletKitModule = await import("@creit.tech/stellar-wallets-kit");
 
+        let walletNet = walletKitModule.WalletNetwork.TESTNET;
+        if (networkId === "mainnet") walletNet = walletKitModule.WalletNetwork.PUBLIC;
+        else if (networkId === "futurenet") walletNet = walletKitModule.WalletNetwork.FUTURENET;
+        else if (networkId === "localhost") walletNet = walletKitModule.WalletNetwork.SANDBOX || walletKitModule.WalletNetwork.TESTNET;
+
         const kitInstance = new walletKitModule.StellarWalletsKit({
-          network: walletKitModule.WalletNetwork.TESTNET,
+          network: walletNet,
           selectedWalletId: walletKitModule.FREIGHTER_ID,
           modules: walletKitModule.allowAllModules(),
         });
@@ -60,7 +67,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     };
 
     initKit();
-  }, []);
+  }, [networkId]);
 
   const supportedWallets = [
     { id: "freighter", name: "Freighter", icon: "https://stellar.creit.tech/wallet-icons/freighter.png" },

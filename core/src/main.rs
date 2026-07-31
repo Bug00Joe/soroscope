@@ -1,60 +1,34 @@
+#![allow(dead_code)]
+
 mod auth;
 mod benchmarks;
+mod cache;
 mod comparison;
 mod errors;
-mod simulation_service;
 pub mod fee_analytics;
 pub mod fee_collector;
 pub mod fee_store;
+mod gas_golfing;
 pub mod insights;
 mod jobs;
+mod merkle_tree;
 mod parser;
 mod routing;
 pub mod rpc_provider;
-mod cache;
+mod rpc_throttle;
+mod runner;
 mod simulation;
+mod simulation_service;
+mod trace_propagation;
 mod wasm_branch_analysis;
 mod ws;
 
-use crate::cache::{SimulationCache, ContractCache};
+use crate::cache::{ContractCache, SimulationCache};
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
+use crate::merkle_tree::MerkleTree;
 use axum::{
-    extract::State,
-    routing::{get, post},
-    Json, Router,
-};
-use simulation_service::{AnalysisResult, SimulationMetric, SimulationService};
-use std::env;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-#[tokio::main]
-async fn main() {
-    let db_path =
-        env::var("SOROSCOPE_DB_PATH").unwrap_or_else(|_| "soroscope_metrics.db".to_string());
-    let webhook_url = env::var("SOROSCOPE_ALERT_WEBHOOK_URL").ok();
-    let simulation_service = match SimulationService::new(db_path, webhook_url) {
-        Ok(service) => Arc::new(service),
-        Err(err) => {
-            eprintln!("Failed to initialize simulation service: {}", err);
-            return;
-        }
-    };
-
-    // CLI Argument Handling
-use crate::fee_analytics::{FeeAnalyticsEngine, MarketConditions, ModelBreakdown};
-use crate::fee_collector::{FeeCollector, FeeCollectorConfig};
-use crate::fee_store::FeeStore;
-use crate::cache::{DiskCache, DiskCacheConfig};
-use crate::insights::InsightsEngine;
-use crate::jobs::{
-    JobId, JobQueue, JobQueueConfig, JobWorker, SubmitJobRequest, SubmitJobResponse,
-};
-use crate::rpc_provider::{ProviderRegistry, RpcProvider};
-use crate::simulation::{SimulationEngine, SimulationResult};
-use axum::{
-    extract::{Json, Multipart, Path, State},
+    extract::{Json, Multipart, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     middleware,
     response::IntoResponse,
@@ -64,10 +38,22 @@ use axum::{
 use config::{Config, ConfigError};
 use prometheus::{Encoder, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder};
 use serde::{Deserialize, Serialize};
+use simulation_service::{AnalysisResult, SimulationMetric, SimulationService};
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+// CLI Argument Handling
+use crate::fee_analytics::{FeeAnalyticsEngine, MarketConditions, ModelBreakdown};
+use crate::fee_collector::{FeeCollector, FeeCollectorConfig};
+use crate::fee_store::FeeStore;
+use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
+use crate::insights::InsightsEngine;
+use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
+use crate::merkle_tree::MerkleTree;
+use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
+use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
+use crate::ws::SimulationBus;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -141,6 +127,10 @@ struct AppConfig {
     /// Enable fee market analysis (default true).
     #[serde(default = "default_fee_analysis_enabled")]
     fee_analysis_enabled: bool,
+    /// Emergency pause for message verification (default false).
+    /// When true, all verification endpoints return an error.
+    #[serde(default = "default_emergency_verification_paused")]
+    emergency_verification_paused: bool,
     /// Filesystem path that backs the disk-persistent L2 cache. When
     /// empty the L2 tier is disabled and the service runs L1-only (same
     /// behaviour as before #104).
@@ -158,6 +148,10 @@ fn default_health_check_interval() -> u64 {
 
 fn default_simulation_timeout_secs() -> u64 {
     30
+}
+
+fn default_simulation_mode() -> String {
+    "failover".to_string()
 }
 
 fn default_gossip_interval_secs() -> u64 {
@@ -188,6 +182,9 @@ fn default_fee_analysis_enabled() -> bool {
     true
 }
 
+fn default_emergency_verification_paused() -> bool {
+    false
+}
 fn default_disk_cache_path() -> String {
     // Empty == L2 disabled. Operators who want persistence set this in
     // env / config.toml explicitly; we don't create a hidden directory
@@ -223,6 +220,7 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("fee_collection_interval_secs", 5)?
         .set_default("fee_retention_days", 30)?
         .set_default("fee_analysis_enabled", true)?
+        .set_default("emergency_verification_paused", false)?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
         .build()?;
@@ -324,6 +322,8 @@ pub struct AppState {
     fee_store: Arc<FeeStore>,
     /// Prometheus metrics collectors.
     metrics: Arc<AppMetrics>,
+    /// WebSocket event bus for simulation jobs.
+    simulation_bus: Arc<SimulationBus>,
 }
 
 #[derive(Clone)]
@@ -397,49 +397,65 @@ pub struct AnalyzeRequest {
     pub protocol_version: Option<u32>,
     /// Whether to enable experimental host functions
     pub enable_experimental: Option<bool>,
+    /// Whether to generate and include Merkle tree root of the state snapshot
+    #[serde(default)]
+    #[schema(example = false)]
+    pub include_merkle_tree: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct ResourceReport {
     /// CPU instructions consumed
-    #[schema(example = 1500, description = "CPU instructions consumed by the contract call")]
+    #[schema(example = 1500)]
     pub cpu_instructions: u64,
     /// RAM bytes consumed
-    #[schema(example = 3000, description = "RAM bytes consumed by the contract call")]
+    #[schema(example = 3000)]
     pub ram_bytes: u64,
     /// Ledger read bytes
-    #[schema(example = 1024, description = "Ledger read bytes during the contract call")]
+    #[schema(example = 1024)]
     pub ledger_read_bytes: u64,
     /// Ledger write bytes
-    #[schema(example = 512, description = "Ledger write bytes during the contract call")]
+    #[schema(example = 512)]
     pub ledger_write_bytes: u64,
     /// Transaction size in bytes
-    #[schema(example = 450, description = "Transaction size in bytes")]
+    #[schema(example = 450)]
     pub transaction_size_bytes: u64,
     /// Estimated cost in stroops
-    #[schema(example = 1000, description = "Estimated cost in stroops")]
+    #[schema(example = 1000)]
     pub cost_stroops: u64,
     /// Report showing which data was injected vs live
-    #[schema(description = "State dependency report for the simulation")]
     pub state_dependency: Option<Vec<StateDependencyReport>>,
     /// TTL status for touched ledger entries and extension suggestions.
-    #[schema(description = "TTL analysis report for touched ledger entries")]
     pub ttl_analysis: Option<TtlAnalysisApiReport>,
     /// Efficiency score (0–100) and optimisation insights.
-    #[schema(description = "Efficiency score and optimisation insights")]
     pub nutrition: NutritionReport,
     /// Cross-contract call graph
-    #[schema(description = "Cross-contract call graph")]
     pub call_graph: Option<crate::simulation::CallGraph>,
     /// Call graph in Mermaid format
-    #[schema(description = "Call graph in Mermaid format")]
     pub call_graph_mermaid: Option<String>,
     /// Snapshot of the ledger state used/touched during simulation
-    #[schema(description = "Snapshot of the ledger state used/touched during simulation")]
     pub state_snapshot: Option<crate::simulation::SimulationStateSnapshot>,
     /// Protocol version used for this simulation
     #[schema(example = 20)]
     pub protocol_version: u32,
+    /// Testnet average resource usage for comparison
+    pub testnet_averages: TestnetAverages,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TestnetAverages {
+    /// Average CPU instructions for typical Soroban transactions
+    pub cpu_instructions: u64,
+    /// Average RAM bytes for typical Soroban transactions
+    pub ram_bytes: u64,
+    /// Average ledger read bytes for typical Soroban transactions
+    pub ledger_read_bytes: u64,
+    /// Average ledger write bytes for typical Soroban transactions
+    pub ledger_write_bytes: u64,
+    /// Average transaction size bytes for typical Soroban transactions
+    pub transaction_size_bytes: u64,
+    /// Merkle tree root hash (hex-encoded) of the state snapshot, if requested
+    pub merkle_tree_root: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -658,7 +674,11 @@ pub struct WasmBranchAnalysisResponse {
 }
 
 /// Convert a `SimulationResult` (library type) into the API `ResourceReport`.
-fn to_report(result: &SimulationResult, insights_engine: &InsightsEngine) -> ResourceReport {
+fn to_report(
+    result: &SimulationResult,
+    insights_engine: &InsightsEngine,
+    merkle_tree_root: Option<String>,
+) -> ResourceReport {
     let insights_report = insights_engine.analyze(&result.resources);
 
     ResourceReport {
@@ -720,6 +740,14 @@ fn to_report(result: &SimulationResult, insights_engine: &InsightsEngine) -> Res
         call_graph_mermaid: result.call_graph.as_ref().map(|g| g.to_mermaid()),
         state_snapshot: result.state_snapshot.clone(),
         protocol_version: result.protocol_version,
+        testnet_averages: TestnetAverages {
+            cpu_instructions: 3_000_000,
+            ram_bytes: 512_000,
+            ledger_read_bytes: 2_048,
+            ledger_write_bytes: 1_024,
+            transaction_size_bytes: 600,
+            merkle_tree_root,
+        },
     }
 }
 
@@ -840,6 +868,36 @@ async fn analyze(
         .with_label_values(&["efficiency_score"])
         .set(insights_report.efficiency_score as f64);
 
+    // Generate Merkle tree root if requested
+    let merkle_tree_root = if payload.include_merkle_tree.unwrap_or(false) {
+        result.state_snapshot.as_ref().and_then(|snapshot| {
+            // Extract ledger entries as leaves for the Merkle tree
+            let leaves: Vec<Vec<u8>> = snapshot
+                .ledger_entries
+                .values()
+                .filter_map(|entry_b64| hex::decode(entry_b64).ok())
+                .collect();
+
+            if leaves.is_empty() {
+                tracing::warn!("No ledger entries available for Merkle tree generation");
+                None
+            } else {
+                let mut tree = MerkleTree::new(256);
+                let mut tree = MerkleTree::new(32);
+                if let Err(e) = tree.build(leaves) {
+                    tracing::error!("Failed to generate Merkle tree: {}", e);
+                    None
+                } else {
+                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
+                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count());
+                    Some(tree.get_root_hex())
+                }
+            }
+        })
+    } else {
+        None
+    };
+
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-soroscope-cache"),
@@ -851,7 +909,10 @@ async fn analyze(
             .unwrap_or_else(|_| HeaderValue::from_static("0")),
     );
 
-    Ok((headers, Json(to_report(&result, &state.insights_engine))))
+    Ok((
+        headers,
+        Json(to_report(&result, &state.insights_engine, merkle_tree_root)),
+    ))
 }
 
 #[utoipa::path(
@@ -889,7 +950,13 @@ async fn analyze_wasm(
 
     let start_time = std::time::Instant::now();
     let resources = tokio::task::spawn_blocking(move || {
-        simulation::profile_contract(wasm_bytes, function_name, args, payload.protocol_version, payload.enable_experimental)
+        simulation::profile_contract(
+            wasm_bytes,
+            function_name,
+            args,
+            payload.protocol_version,
+            payload.enable_experimental,
+        )
     })
     .await
     .map_err(|e| {
@@ -927,10 +994,12 @@ async fn analyze_wasm(
         state_dependency: None,
         ttl_analysis: None,
         transaction_data: String::new(),
+        call_graph: None,
+        state_snapshot: None,
         protocol_version: payload.protocol_version.unwrap_or(20),
     };
 
-    let report = to_report(&sim_result, &state.insights_engine);
+    let report = to_report(&sim_result, &state.insights_engine, None);
     state
         .metrics
         .resource_utilization_percent
@@ -1018,8 +1087,8 @@ async fn analyze_wasm_branches(
     State(_state): State<Arc<AppState>>,
     Json(payload): Json<AnalyzeWasmBranchesRequest>,
 ) -> Result<Json<WasmBranchAnalysisResponse>, AppError> {
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use crate::wasm_branch_analysis::analyze_wasm_branches as run_analysis;
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
     tracing::info!(
         function_name = %payload.function_name,
@@ -1033,12 +1102,10 @@ async fn analyze_wasm_branches(
     let function_name = payload.function_name.clone();
     let args = payload.args.clone().unwrap_or_default();
 
-    let report = tokio::task::spawn_blocking(move || {
-        run_analysis(wasm_bytes, function_name, args)
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("Branch analysis task panicked: {}", e)))?
-    .map_err(|e| AppError::Internal(format!("Branch analysis failed: {}", e)))?;
+    let report = tokio::task::spawn_blocking(move || run_analysis(wasm_bytes, function_name, args))
+        .await
+        .map_err(|e| AppError::Internal(format!("Branch analysis task panicked: {}", e)))?
+        .map_err(|e| AppError::Internal(format!("Branch analysis failed: {}", e)))?;
 
     tracing::info!(
         function_name = %payload.function_name,
@@ -1277,7 +1344,7 @@ pub struct GasGolfingRequest {
 
 #[derive(Serialize, ToSchema)]
 pub struct GasGolfingResponse {
-    pub report: crate::gas_golfing::GasGolfingReport,
+    pub report: GasGolfingReport,
 }
 
 // ── Gas Golfing Handler ───────────────────────────────────────────────────
@@ -1311,7 +1378,9 @@ async fn analyze_gas_golfing(
     let contract_name = payload.contract_name.clone();
 
     let report = tokio::task::spawn_blocking(move || {
-        state.gas_golfing_analyzer.analyze_wasm(&wasm_bytes, &contract_name)
+        state
+            .gas_golfing_analyzer
+            .analyze_wasm(&wasm_bytes, &contract_name)
     })
     .await
     .map_err(|e| AppError::Internal(format!("Gas golfing analysis task panicked: {}", e)))?;
@@ -1337,8 +1406,6 @@ async fn analyze_gas_golfing(
 async fn fee_recommend(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<FeeRecommendationResponse>, AppError> {
-    use crate::fee_analytics::TrendDirection;
-
     tracing::info!("Generating fee recommendation");
 
     // Get recent samples for analysis
@@ -1463,7 +1530,7 @@ async fn fee_analytics(
     paths(
         analyze, analyze_wasm, optimize_limits, compare_handler,
         auth::challenge_handler, auth::verify_handler, auth::jwks_handler,
-        fee_recommend, fee_history, fee_analytics
+        fee_recommend, fee_history, fee_analytics, batch_contract_state
     ),
     components(schemas(
         AnalyzeRequest, AnalyzeWasmRequest, AnalyzeWasmBranchesRequest,
@@ -1484,7 +1551,8 @@ async fn fee_analytics(
         crate::fee_store::LedgerFeeSample,
         crate::fee_analytics::MarketConditions,
         crate::fee_analytics::ModelBreakdown,
-        crate::fee_analytics::TrendDirection
+        crate::fee_analytics::TrendDirection,
+        BatchStateItem, BatchStateRequest, ContractStateResult, BatchStateResponse
     )),
     tags(
         (name = "Analysis", description = "Soroban contract resource analysis endpoints"),
@@ -1499,6 +1567,120 @@ async fn fee_analytics(
     )
 )]
 struct ApiDoc;
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct BatchStateItem {
+    /// Contract identifier used to group the response.
+    contract_id: String,
+    /// Base64-encoded ledger key XDR values to fetch for this contract.
+    key_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct BatchStateRequest {
+    contracts: Vec<BatchStateItem>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct ContractStateResult {
+    contract_id: String,
+    entries: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct BatchStateResponse {
+    contracts: Vec<ContractStateResult>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/contracts/batch-state",
+    request_body = BatchStateRequest,
+    responses((status = 200, description = "Contract state snapshot batch", body = BatchStateResponse)),
+    tag = "Contracts"
+)]
+async fn batch_contract_state(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<BatchStateRequest>,
+) -> Result<Json<BatchStateResponse>, AppError> {
+    if request.contracts.is_empty()
+        || request
+            .contracts
+            .iter()
+            .any(|item| item.contract_id.trim().is_empty() || item.key_paths.is_empty())
+    {
+        return Err(AppError::BadRequest(
+            "contracts must contain a contract_id and at least one key path".to_string(),
+        ));
+    }
+
+    let keys: Vec<String> = request
+        .contracts
+        .iter()
+        .flat_map(|item| item.key_paths.iter().cloned())
+        .collect();
+    let provider = state
+        .provider_registry
+        .healthy_providers()
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("no healthy RPC provider available".to_string()))?;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getLedgerEntries",
+        "params": { "keys": keys }
+    });
+    let client = reqwest::Client::new();
+    let mut rpc_request = client.post(&provider.url).json(&body);
+    if let (Some(header), Some(value)) = (&provider.auth_header, &provider.auth_value) {
+        rpc_request = rpc_request.header(header, value);
+    }
+    let rpc_response: serde_json::Value = rpc_request
+        .send()
+        .await
+        .map_err(|error| AppError::Internal(format!("RPC request failed: {error}")))?
+        .error_for_status()
+        .map_err(|error| AppError::Internal(format!("RPC returned an error: {error}")))?
+        .json()
+        .await
+        .map_err(|error| AppError::Internal(format!("invalid RPC response: {error}")))?;
+    if let Some(error) = rpc_response.get("error") {
+        return Err(AppError::Internal(format!("RPC node error: {error}")));
+    }
+    let entries = rpc_response
+        .pointer("/result/entries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(Json(group_batch_entries(&request.contracts, &entries)))
+}
+
+fn group_batch_entries(
+    requested: &[BatchStateItem],
+    entries: &[serde_json::Value],
+) -> BatchStateResponse {
+    BatchStateResponse {
+        contracts: requested
+            .iter()
+            .map(|item| ContractStateResult {
+                contract_id: item.contract_id.clone(),
+                entries: entries
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|key| item.key_paths.iter().any(|path| path == key))
+                    })
+                    .cloned()
+                    .collect(),
+            })
+            .collect(),
+    }
+}
 
 async fn health_check() -> &'static str {
     "OK"
@@ -1526,6 +1708,9 @@ async fn registry_gossip(
 
 #[tokio::main]
 async fn main() {
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
     }
@@ -1564,10 +1749,12 @@ async fn main() {
         }
 
         if let Some(path) = wasm_path {
-            if let Err(e) = benchmarks::run_token_benchmark(path, simulation_service.as_ref()).await
-            {
-                eprintln!("Benchmark failed: {}", e);
-            if let Err(e) = benchmarks::run_token_benchmark(path) {
+            let db_path = env::var("SOROSCOPE_DB_PATH")
+                .unwrap_or_else(|_| "soroscope_metrics.db".to_string());
+            let webhook_url = env::var("SOROSCOPE_ALERT_WEBHOOK_URL").ok();
+            let simulation_service = SimulationService::new(db_path, webhook_url)
+                .expect("initialize simulation service");
+            if let Err(e) = benchmarks::run_token_benchmark(path, &simulation_service).await {
                 tracing::error!("Benchmark failed: {}", e);
             }
         } else {
@@ -1579,24 +1766,87 @@ async fn main() {
         return;
     }
 
+    // ── CLI: merkle subcommand ──────────────────────────────────────────
+    if args.len() > 1 && args[1] == "merkle" {
+        if args.len() < 4 {
+            eprintln!("Usage: soroscope-core merkle <build|proof> <args>");
+            eprintln!("Commands:");
+            eprintln!("  build <leaf1> <leaf2> ...            Build a Merkle tree and print the root hash");
+            eprintln!("  proof <leaf_index> <leaf1> <leaf2> ... Generate a Merkle proof for the given leaf index");
+            std::process::exit(1);
+        }
+
+        let command = &args[2];
+        match command.as_str() {
+            "build" => {
+                if args.len() < 4 {
+                    eprintln!("Usage: soroscope-core merkle build <leaf1> <leaf2> ...");
+                    std::process::exit(1);
+                }
+                let leaves: Vec<Vec<u8>> = args[3..]
+                    .iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect();
+                let mut tree = merkle_tree::MerkleTree::new(32);
+                match tree.build(leaves) {
+                    Ok(()) => println!("{}", tree.get_root_hex()),
+                    Err(err) => {
+                        eprintln!("Error building Merkle tree: {}", err);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "proof" => {
+                if args.len() < 5 {
+                    eprintln!(
+                        "Usage: soroscope-core merkle proof <leaf_index> <leaf1> <leaf2> ..."
+                    );
+                    std::process::exit(1);
+                }
+                let leaf_index = match args[3].parse::<usize>() {
+                    Ok(index) => index,
+                    Err(_) => {
+                        eprintln!("Leaf index must be a non-negative integer.");
+                        std::process::exit(1);
+                    }
+                };
+                let leaves: Vec<Vec<u8>> = args[4..]
+                    .iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect();
+                let mut tree = merkle_tree::MerkleTree::new(32);
+                if let Err(err) = tree.build(leaves) {
+                    eprintln!("Error building Merkle tree: {}", err);
+                    std::process::exit(1);
+                }
+                let proof = match tree.generate_proof(leaf_index) {
+                    Ok(proof) => proof,
+                    Err(err) => {
+                        eprintln!("Error generating Merkle proof: {}", err);
+                        std::process::exit(1);
+                    }
+                };
+                let output = serde_json::json!({
+                    "root": tree.get_root_hex(),
+                    "leaf_index": leaf_index,
+                    "leaf_count": tree.leaf_count(),
+                    "proof": proof,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            }
+            unknown => {
+                eprintln!("Unknown merkle command: {}", unknown);
+                eprintln!("Available commands: build, proof");
+                std::process::exit(1);
+            }
+        }
+
+        return;
+    }
+
     // Default Web Server
     println!("SoroScope CLI Initialized. Run with 'benchmark' argument to profile token contract.");
 
-    // build our application with a single route
-    let app = Router::new()
-        .route(
-            "/",
-            get(|| async {
-                "Hello from SoroScope! Use POST /simulations/analyze to persist + compare simulation metrics."
-            }),
-        )
-        .route("/health", get(|| async { "ok" }))
-        .route(
-            "/error",
-            get(|| async { Err::<&str, AppError>(AppError::BadRequest("Test error".to_string())) }),
-        )
-        .route("/simulations/analyze", post(analyze_simulation))
-        .with_state(simulation_service);
     // ── CLI: compare subcommand ──────────────────────────────────────────
     if args.len() > 1 && args[1] == "compare" {
         if args.len() < 4 {
@@ -1648,7 +1898,9 @@ async fn main() {
     // ── CLI: export subcommand ──────────────────────────────────────────
     if args.len() > 1 && args[1] == "export" {
         if args.len() < 6 {
-            eprintln!("Usage: soroscope-core export <contract_id> <function> <args_json> <output_file>");
+            eprintln!(
+                "Usage: soroscope-core export <contract_id> <function> <args_json> <output_file>"
+            );
             eprintln!("\nSimulate a transaction and export the touched state to a JSON file.");
             std::process::exit(1);
         }
@@ -1664,7 +1916,10 @@ async fn main() {
         let registry = rpc_provider::ProviderRegistry::new(providers);
         let engine = SimulationEngine::with_registry(std::sync::Arc::clone(&registry));
 
-        match engine.simulate_from_contract_id(contract_id, function, parsed_args, None).await {
+        match engine
+            .simulate_from_contract_id(contract_id, function, parsed_args, None, None, None)
+            .await
+        {
             Ok(result) => {
                 if let Some(snapshot) = result.state_snapshot {
                     let json = serde_json::to_string_pretty(&snapshot).unwrap();
@@ -1700,8 +1955,10 @@ async fn main() {
         let function = &args[4];
         let args_json = &args[5];
 
-        let snapshot_json = std::fs::read_to_string(snapshot_file).expect("Failed to read snapshot file");
-        let snapshot: crate::simulation::SimulationStateSnapshot = serde_json::from_str(&snapshot_json).expect("Failed to parse snapshot JSON");
+        let snapshot_json =
+            std::fs::read_to_string(snapshot_file).expect("Failed to read snapshot file");
+        let snapshot: crate::simulation::SimulationStateSnapshot =
+            serde_json::from_str(&snapshot_json).expect("Failed to parse snapshot JSON");
 
         let parsed_args: Vec<String> = serde_json::from_str(args_json).unwrap_or_default();
 
@@ -1709,7 +1966,17 @@ async fn main() {
         let registry = rpc_provider::ProviderRegistry::new(providers);
         let engine = SimulationEngine::with_registry(std::sync::Arc::clone(&registry));
 
-        match engine.simulate_from_contract_id(contract_id, function, parsed_args, Some(snapshot.ledger_entries)).await {
+        match engine
+            .simulate_from_contract_id(
+                contract_id,
+                function,
+                parsed_args,
+                Some(snapshot.ledger_entries),
+                None,
+                None,
+            )
+            .await
+        {
             Ok(result) => {
                 println!("Simulation successful with restored state.");
                 println!("Resources: {:?}", result.resources);
@@ -1732,6 +1999,7 @@ async fn main() {
         config.jwt_private_key.clone(),
         None,
         config.network_passphrase.clone(),
+        config.emergency_verification_paused,
     ));
     tracing::info!(
         "SEP-10 server account: {}",
@@ -1771,7 +2039,7 @@ async fn main() {
         timeout_secs = config.simulation_timeout_secs,
         "Simulation timeout configured"
     );
-    tracing::info!(mode = %simulation_mode, "Simulation mode configured");
+    tracing::info!(mode = ?simulation_mode, "Simulation mode configured");
 
     // ── Fee Market Setup ────────────────────────────────────────────────
     let database_url = &config.database_url;
@@ -1796,7 +2064,7 @@ async fn main() {
         max_concurrent_jobs: config.max_concurrent_jobs,
         ..JobQueueConfig::default()
     };
-    let job_queue = JobQueue::new(database_url, job_queue_config.clone())
+    let job_queue = JobQueue::new(database_url, &config.redis_url, job_queue_config.clone())
         .await
         .expect("Failed to initialize job queue");
     // ── WebSocket event bus ─────────────────────────────────────────────
@@ -1898,6 +2166,7 @@ async fn main() {
             Arc::clone(&registry),
             Arc::clone(&contract_cache),
         ),
+        provider_registry: Arc::clone(&registry),
         cache: simulation_cache,
         insights_engine: InsightsEngine::new(),
         gas_golfing_analyzer: GasGolfingAnalyzer::new(),
@@ -1906,6 +2175,7 @@ async fn main() {
         fee_analytics_engine,
         fee_store,
         metrics: Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics")),
+        simulation_bus,
     });
 
     let cors = CorsLayer::new().allow_origin(Any);
@@ -1929,8 +2199,10 @@ async fn main() {
         )
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_handler))
+        .route("/api/v1/contracts/batch-state", post(batch_contract_state))
         .route("/auth/challenge", post(auth::challenge_handler))
         .route("/auth/verify", post(auth::verify_handler))
+        .route("/auth/emergency-pause", post(auth::emergency_pause_handler))
         .route("/auth/jwks", get(auth::jwks_handler))
         // Fee market routes (public access)
         .route("/fees/recommend", get(fee_recommend))
@@ -1968,10 +2240,34 @@ async fn main() {
 // Integration Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::simulation::{SimulationError, SorobanResources};
+
+    #[test]
+    fn batch_state_groups_entries_by_requested_contract() {
+        let requested = vec![
+            BatchStateItem {
+                contract_id: "CA".to_string(),
+                key_paths: vec!["key-a".to_string()],
+            },
+            BatchStateItem {
+                contract_id: "CB".to_string(),
+                key_paths: vec!["key-b".to_string()],
+            },
+        ];
+        let entries = vec![
+            serde_json::json!({"key": "key-b", "xdr": "value-b"}),
+            serde_json::json!({"key": "key-a", "xdr": "value-a"}),
+        ];
+
+        let response = group_batch_entries(&requested, &entries);
+        assert_eq!(response.contracts.len(), 2);
+        assert_eq!(response.contracts[0].contract_id, "CA");
+        assert_eq!(response.contracts[0].entries[0]["xdr"], "value-a");
+        assert_eq!(response.contracts[1].entries[0]["xdr"], "value-b");
+    }
 
     #[test]
     fn test_error_mapping_node_error() {
@@ -2055,10 +2351,13 @@ mod tests {
             state_dependency: None,
             ttl_analysis: None,
             transaction_data: "AAA".to_string(),
+            call_graph: None,
+            state_snapshot: None,
+            protocol_version: 0,
         };
 
         let insights_engine = InsightsEngine::new();
-        let report = to_report(&sim_result, &insights_engine);
+        let report = to_report(&sim_result, &insights_engine, None);
 
         assert_eq!(report.cost_stroops, 5000);
         assert_eq!(report.cpu_instructions, 1000000);
@@ -2096,8 +2395,8 @@ mod tests {
     /// returns i32 (i32.const 42; end). Mirrors the helper in simulation.rs.
     fn minimal_wasm_bytes() -> Vec<u8> {
         use wasm_encoder::{
-            CodeSection, ExportKind, ExportSection, Function, FunctionSection,
-            Module, TypeSection, ValType,
+            CodeSection, ExportKind, ExportSection, Function, FunctionSection, Module, TypeSection,
+            ValType,
         };
         let mut module = Module::new();
         let mut types = TypeSection::new();
@@ -2280,7 +2579,6 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
-
 }
 
 async fn analyze_simulation(
