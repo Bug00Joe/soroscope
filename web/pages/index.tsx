@@ -1,7 +1,10 @@
 import Head from "next/head";
+import dynamic from "next/dynamic";
+import { useRouter } from "next/router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { HeaderNav, type NavTab } from "../components/HeaderNav";
+import { SEARCH_COMMAND_EVENT } from "../components/GlobalSearchModal";
 import { ConnectButton } from "../components/ConnectButton";
 import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
@@ -27,7 +30,21 @@ import {
   type InvocationResult,
 } from "../lib/sorobantypes";
 
+// React Flow measures real DOM nodes, so the visualizer is client-only.
+const SchemaVisualizer = dynamic(
+  () => import("../components/SchemaVisualizer").then((mod) => mod.SchemaVisualizer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[420px] animate-pulse rounded-2xl border border-slate-800 bg-slate-900/60" />
+    ),
+  },
+);
+
+const VALID_TABS: NavTab[] = ["explorer", "schema", "history", "transactions"];
+
 export default function Home() {
+  const router = useRouter();
   const { network } = useNetwork();
   const [tab, setTab] = useState<NavTab>('explorer');
   const [contractId, setContractId] = useState(network.defaultContractId);
@@ -46,6 +63,36 @@ export default function Home() {
 
   useEffect(() => {
     setCurrentResult(null);
+  }, []);
+
+  // Keep the active tab in sync with `?tab=` so the Cmd+K palette (and plain
+  // links) can deep-link straight to a panel.
+  useEffect(() => {
+    const requested = router.query.tab;
+    const value = Array.isArray(requested) ? requested[0] : requested;
+    if (value && VALID_TABS.includes(value as NavTab)) {
+      setTab(value as NavTab);
+    }
+  }, [router.query.tab]);
+
+  // Non-navigation commands from the global search overlay.
+  useEffect(() => {
+    const handleCommand = (event: Event) => {
+      const detail = (event as CustomEvent).detail as
+        | { action?: string; payload?: { name?: string } }
+        | undefined;
+      if (detail?.action !== "select-function" || !detail.payload?.name) return;
+
+      const match = MOCK_CONTRACT_FUNCTIONS.find((fn) => fn.name === detail.payload?.name);
+      if (!match) return;
+
+      setSelectedFunction(match);
+      setCurrentResult(null);
+      setTab("explorer");
+    };
+
+    window.addEventListener(SEARCH_COMMAND_EVENT, handleCommand);
+    return () => window.removeEventListener(SEARCH_COMMAND_EVENT, handleCommand);
   }, []);
 
   const handleSimulate = async (inputs: Record<string, any>, customWasmData?: string) => {
@@ -215,6 +262,8 @@ export default function Home() {
                     Run an analysis to see results
                   </p>
                 )
+              ) : tab === 'schema' ? (
+                <SchemaVisualizer report={analysisReport} />
               ) : tab === 'transactions' ? (
                 <TransactionHistoryTable transactions={mockTransactions} />
               ) : (

@@ -7,11 +7,24 @@
  */
 
 import type { AnalyzeResponse } from './sorobantypes';
+import { loadSettings, resolveEndpoint } from './userSettings';
 
 const DEFAULT_DEV_API_URL = 'http://localhost:8080';
 
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '') ?? DEFAULT_DEV_API_URL;
+
+/**
+ * Base URL for every backend call.
+ *
+ * A custom indexer URL saved on the /settings page takes precedence over the
+ * build-time `NEXT_PUBLIC_API_URL`, so power users can point the app at their
+ * own self-hosted backend without a rebuild. Resolved per request because the
+ * preference can change while the app is open.
+ */
+export function getApiBaseUrl(): string {
+  return resolveEndpoint(loadSettings().indexerUrl, API_URL);
+}
 
 export const apiConfig = {
   baseUrl: API_URL,
@@ -48,7 +61,7 @@ export class ApiError extends Error {
 
 export function apiUrl(path: string, params?: ApiRequestOptions['params']): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const url = new URL(`${API_URL}${normalizedPath}`);
+  const url = new URL(`${getApiBaseUrl()}${normalizedPath}`);
 
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
