@@ -1,10 +1,9 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Vec, vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Vec};
 
-use emergency_guard::{EmergencyGuard, PauseType};
+use emergency_guard::{DefaultEmergencyGuard, EmergencyGuard, EmergencyGuardTrait, PauseType};
 pub use soroscope_error_codes::ContractError;
 use soroscope_math::Fixed;
-use emergency_guard::{DefaultEmergencyGuard, PauseType, EmergencyGuardTrait};
 
 pub const SCALE: i128 = 1_000_000_000_000_000_000; // 18 decimals
 
@@ -324,10 +323,6 @@ impl StakingRewards {
         e.storage().instance().set(&DataKey::TotalStaked, &0i128);
         e.storage().instance().extend_ttl(10000, 10000);
 
-        // Initialize emergency guard with single admin and threshold of 1
-        let admins = vec![&e, owner.clone()];
-        DefaultEmergencyGuard::init_guard(&e, admins, 1)
-            .map_err(|_| ContractError::AlreadyInitialized)?;
         // Initialize the embedded EmergencyGuard so granular pause checks
         // (e.g. PauseType::CLAIM_REWARDS) can be toggled by the owner.
         // Threshold of 1 means the single owner can trigger any pause.
@@ -581,9 +576,6 @@ impl StakingRewards {
     /// Pause staking operations (admin only).
     pub fn pause_staking(e: Env) -> Result<(), ContractError> {
         let config = Self::get_config(e.clone())?;
-    /// Sets the global paused state (owner only).
-    pub fn set_paused(e: Env, paused: bool) -> Result<(), ContractError> {
-        let mut config = Self::get_config(e.clone())?;
         config.owner.require_auth();
 
         DefaultEmergencyGuard::set_pause_state(&e, PauseType::STAKE, true)
@@ -628,8 +620,7 @@ impl StakingRewards {
 
     /// Resume all paused operations (requires multi-sig approval).
     pub fn resume_all(e: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
-        DefaultEmergencyGuard::resume_all(&e, approvers)
-            .map_err(|_| ContractError::Paused)?;
+        DefaultEmergencyGuard::resume_all(&e, approvers).map_err(|_| ContractError::Paused)?;
 
         e.events().publish(
             (String::from_str(&e, "resume_all"),),
@@ -662,20 +653,35 @@ impl StakingRewards {
     }
 
     /// Add new admin (multi-sig required).
-    pub fn add_admin(e: Env, approvers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    pub fn add_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
         DefaultEmergencyGuard::add_admin(&e, approvers, new_admin)
             .map_err(|_| ContractError::Paused)
     }
 
     /// Remove admin (multi-sig required).
-    pub fn remove_admin(e: Env, approvers: Vec<Address>, admin: Address) -> Result<(), ContractError> {
-        DefaultEmergencyGuard::remove_admin(&e, approvers, admin)
-            .map_err(|_| ContractError::Paused)
+    pub fn remove_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        admin: Address,
+    ) -> Result<(), ContractError> {
+        DefaultEmergencyGuard::remove_admin(&e, approvers, admin).map_err(|_| ContractError::Paused)
     }
 
     /// Rotate admin (multi-sig required).
-    pub fn rotate_admin(e: Env, approvers: Vec<Address>, old_admin: Address, new_admin: Address) -> Result<(), ContractError> {
+    pub fn rotate_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        old_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
         DefaultEmergencyGuard::rotate_admin(&e, approvers, old_admin, new_admin)
+            .map_err(|_| ContractError::Paused)
+    }
+
     /// Granularly pause or unpause the claim_rewards operation (owner only).
     /// This is independent of the global `is_paused` flag and uses the
     /// embedded EmergencyGuard bitmask (PauseType::CLAIM_REWARDS).
