@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { NetworkProvider } from "../context/NetworkContext";
 import { WalletProvider } from "../context/WalletContext";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { GlobalSearchModal } from "../components/GlobalSearchModal";
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
@@ -12,6 +13,8 @@ export default function App({ Component, pageProps }: AppProps) {
         <NetworkProvider>
           <WalletProvider>
             <Component {...pageProps} />
+            {/* Mounted app-wide so Cmd+K / Ctrl+K works on every page. */}
+            <GlobalSearchModal />
           </WalletProvider>
         </NetworkProvider>
       </ThemeProvider>
