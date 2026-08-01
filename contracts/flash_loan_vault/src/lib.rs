@@ -66,6 +66,8 @@ pub enum Error {
     InsufficientDeposit = 10,
     /// Borrow (flash loan) is paused.
     BorrowPaused = 11,
+    /// Receiver contract does not implement the FlashLoanReceiver interface.
+    InvalidReceiver = 12,
 }
 
 // ── Event types ──────────────────────────────────────────────────────────────
@@ -188,9 +190,14 @@ pub struct BorrowRecord {
 }
 
 /// Helper: calculate fee for a given amount using configured bps.
+/// Uses ceiling division when fee_bps > 0 to prevent fee evasion on small amounts.
 fn calculate_fee(e: &Env, amount: i128) -> i128 {
     let fee_bps = get_fee_bps(e);
-    amount * fee_bps / 10_000
+    if fee_bps == 0 || amount <= 0 {
+        0
+    } else {
+        (amount * fee_bps + 9_999) / 10_000
+    }
 }
 
 fn is_flash_loan_active(e: &Env) -> bool {
@@ -445,6 +452,11 @@ impl FlashLoanVault {
         // 4. Auth: the initiator must have signed.
         initiator.require_auth();
 
+        // 4b. Verify receiver implements the flash loan callback interface.
+        if !receiver.is_contract() {
+            return Err(Error::InvalidReceiver);
+        }
+
         let token_addr = load_token(&e)?;
         let token = soroban_sdk::token::Client::new(&e, &token_addr);
 
@@ -454,9 +466,8 @@ impl FlashLoanVault {
             return Err(Error::InsufficientVaultBalance);
         }
 
-        // 6. Calculate fee.
-        let fee_bps = get_fee_bps(&e);
-        let fee = amount * fee_bps / 10_000;
+        // 6. Calculate fee using configured basis points with ceiling division.
+        let fee = calculate_fee(&e, amount);
 
         // 7. Set reentrancy guard.
         set_flash_loan_active(&e, true);
@@ -466,12 +477,19 @@ impl FlashLoanVault {
 
         // 9. Call the receiver's callback so it can use the funds.
         let receiver_client = FlashLoanReceiverClient::new(&e, &receiver);
-        receiver_client.execute_operation(&token_addr, &amount, &fee, &initiator);
+        if receiver_client
+            .try_execute_operation(&token_addr, &amount, &fee, &initiator)
+            .is_err()
+        {
+            set_flash_loan_active(&e, false);
+            return Err(Error::InvalidReceiver);
+        }
 
         // 10. Verify repayment: after lending `amount`, the receiver must
-        // return `amount + fee`, leaving the vault with its original balance
-        // plus the fee.
-        let required_balance = pre_balance + fee;
+        // return `amount + fee`, leaving the vault contract address with its original balance
+        // plus the dynamically verified fee.
+        let expected_fee = calculate_fee(&e, amount);
+        let required_balance = pre_balance + expected_fee;
         let post_balance = token.balance(&e.current_contract_address());
         if post_balance < required_balance {
             // The transfer at step 8 is rolled back — funds are safe.
@@ -553,13 +571,33 @@ impl FlashLoanVault {
 
         // 8. Call borrower's callback so it can use the funds and repay.
         let receiver_client = FlashLoanReceiverClient::new(&e, &borrower);
-        receiver_client.execute_operation(&token_addr, &amount, &fee, &borrower);
+        if receiver_client
+            .try_execute_operation(&token_addr, &amount, &fee, &borrower)
+            .is_err()
+        {
+            set_flash_loan_active(&e, false);
+            e.storage().instance().set(
+                &DataKey::BorrowRecord(borrower.clone()),
+                &BorrowRecord { fee: 0, total_repayment: 0 },
+            );
+            return Err(Error::InvalidReceiver);
+        }
 
-        // 9. Verify repayment: vault balance must be >= pre_balance + fee.
+        // 9. Verify repayment: vault balance must be >= pre_balance + expected_fee.
+        let expected_fee = calculate_fee(&e, amount);
+        let required_balance = pre_balance + expected_fee;
         let post_balance = token.balance(&e.current_contract_address());
         if post_balance < pre_balance + fee {
-            // Revert with a clear error.
-            panic!("borrow not repaid");
+            set_flash_loan_active(&e, false);
+            e.storage().instance().set(
+                &DataKey::BorrowRecord(borrower.clone()),
+                &BorrowRecord { fee: 0, total_repayment: 0 },
+            );
+        if post_balance < required_balance {
+            e.storage()
+                .instance()
+                .remove(&DataKey::BorrowRecord(borrower));
+            return Err(Error::LoanNotRepaid);
         }
 
         // 10. Clear reentrancy guard and borrow record.
