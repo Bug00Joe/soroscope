@@ -3,6 +3,10 @@ name = "soroscope-core"
 version = "0.1.0"
 edition = "2021"
 
+# The root workspace only lists the contract crates as members, so opt out
+# explicitly — without this, cargo refuses to build the package at all.
+[workspace]
+
 [lib]
 name = "soroscope_core"
 path = "src/lib.rs"
@@ -28,11 +32,14 @@ config = "0.14"
 axum = { version = "0.7", features = ["multipart", "ws"] }
 tempfile = "3"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.27"
 opentelemetry_sdk = "0.27"
 tracing-opentelemetry = "0.28"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 prometheus = "0.14"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "request-id", "set-header"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-full"] }
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 url = "2"
@@ -44,7 +51,7 @@ stellar-strkey = "0.0.9"
 jsonwebtoken = "9"
 ed25519-dalek = "2"
 rand = "0.8"
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 sled = "0.34"
 sqlx = { version = "0.7", features = ["runtime-tokio", "tls-native-tls", "postgres", "sqlite", "uuid", "chrono", "migrate"] }
 redis = { version = "0.25", features = ["tokio-comp"] }
@@ -55,6 +62,27 @@ rsa = "0.9"
 wasm-encoder = { version = "0.240", features = ["wasmparser"] }
 wasmparser = "0.240"
 rayon = "1.8"
+# Used by the host resource alarm monitor (issue #592) to sample CPU
+# and RAM utilisation for the local process. Default features include
+# everything we need: `system`, `process`, and the CPU usage diff.
+sysinfo = "0.32"
+# gRPC event streaming (Issue #583)
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[build-dependencies]
+tonic-build = "0.12"
 
 [dev-dependencies]
 proptest = "1.4.0"
+tower = { version = "0.4", features = ["util"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+tikv-jemalloc-ctl = { version = "0.5", optional = false }
+tikv-jemallocator = { version = "0.5", optional = false }
+
+[[bench]]
+name = "merkle_bench"
+harness = false
+
+name = "memory_bench"

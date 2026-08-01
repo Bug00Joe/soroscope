@@ -157,7 +157,7 @@ struct Claims {
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 
@@ -224,7 +224,8 @@ fn build_challenge_envelope(
     let hash = tx_hash(&tx, &net_id)?;
     let sig = state.signing_key.sign(&hash);
 
-    let hint: [u8; 4] = state.server_public_key[28..32].try_into().unwrap();
+    let hint: [u8; 4] = state.server_public_key[28..32].try_into()
+        .map_err(|_| AppError::Internal("invalid server public key length".into()))?;
     let decorated = DecoratedSignature {
         hint: SignatureHint(hint),
         signature: sig
@@ -325,8 +326,10 @@ fn verify_challenge_envelope(state: &AuthState, signed_xdr_b64: &str) -> Result<
     let hash = tx_hash(&inner.tx, &net_id)?;
 
     let sigs: &[DecoratedSignature] = inner.signatures.as_ref();
-    let server_hint: [u8; 4] = state.server_public_key[28..32].try_into().unwrap();
-    let client_hint: [u8; 4] = client_key[28..32].try_into().unwrap();
+    let server_hint: [u8; 4] = state.server_public_key[28..32].try_into()
+        .map_err(|_| AppError::Internal("invalid server public key length".into()))?;
+    let client_hint: [u8; 4] = client_key[28..32].try_into()
+        .map_err(|_| AppError::BadRequest("invalid client public key length".into()))?;
 
     let mut server_ok = false;
     let mut client_ok = false;

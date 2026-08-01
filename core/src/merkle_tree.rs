@@ -408,7 +408,8 @@ fn test_tree_deterministic_root() {
 
 #[test]
 fn test_even_leaf_count_root_matches_reference() {
-    // Reference computed with SHA-256 + sorted hash_pair (identical algorithm).
+    // Reference computed with double SHA-256 leaves + sorted hash_pair
+    // (identical algorithm, verified independently).
     // Leaves: ["a", "b", "c", "d"] — 4 leaves (even).
     // Expected root: 5f934c91e9d5e70bccd99cbfcdc5c1c252f4e717e6bda7b599c0d86e4ce1e293
     let tree = make_tree(&["a", "b", "c", "d"]);
@@ -428,6 +429,7 @@ fn test_odd_leaf_count_root_matches_reference() {
 
 #[test]
 fn test_single_leaf_root_matches_reference() {
+    // Single leaf: double SHA-256("solo") with no pairing.
     // Single leaf: SHA-256("solo") with no pairing.
     // Expected root: 0018e0e3babbc9f34cfaadf921b6e92dea1318e245a364dd929ed1257a40fa0c
     let tree = make_tree(&["solo"]);
@@ -471,6 +473,7 @@ fn test_odd_leaves_all_proofs_valid() {
         let proof = tree.generate_proof(i).unwrap();
         assert!(proof.verify(), "proof for leaf {i} failed");
     }
+}
 }
 
 // ── Property-based fuzz tests for MerkleTree ──────────────────────────────────
