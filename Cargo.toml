@@ -1,8 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "contracts/*",
+    "contracts/error_codes",
+    "contracts/math",
+    "contracts/proxy",
+    "contracts/staking_rewards",
+    "contracts/oracle_aggregator",
 ]
+
+    "contracts/*",
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"
