@@ -292,11 +292,6 @@ fn test_pause_safeguards_claim() {
 
 #[test]
 fn test_successful_withdrawal() {
-/// Verifies that the CLAIM_REWARDS granular pause blocks claims independently
-/// of the global `is_paused` flag, satisfying issue #463 acceptance criteria.
-#[test]
-#[should_panic(expected = "Contract, #14")]
-fn test_granular_claim_rewards_pause() {
     let (e, client, _, staking_token, _) = setup();
     let user = Address::generate(&e);
 
@@ -316,6 +311,28 @@ fn test_granular_claim_rewards_pause() {
     // Verify tokens returned to user
     let token_balance = token::Client::new(&e, &staking_token).balance(&user);
     assert_eq!(token_balance, STAKE_AMOUNT);
+}
+
+/// Verifies that the CLAIM_REWARDS granular pause blocks claims independently
+/// of the global `is_paused` flag, satisfying issue #463 acceptance criteria.
+#[test]
+#[should_panic(expected = "Contract, #14")]
+fn test_granular_claim_rewards_pause() {
+    let (e, client, _, staking_token, _) = setup();
+    let user = Address::generate(&e);
+
+    let staking_client = token::StellarAssetClient::new(&e, &staking_token);
+    staking_client.mint(&user, &STAKE_AMOUNT);
+
+    client.stake(&user, &STAKE_AMOUNT);
+    advance_ledger(&e, 5);
+
+    // Activate CLAIM_REWARDS granular pause via the contract's delegation function.
+    // Global is_paused remains false — only the granular bitmask bit is set.
+    client.set_claim_rewards_paused(&true);
+
+    // Claim MUST fail with ContractError::Paused (error code 14).
+    client.claim(&user);
 }
 
 #[test]
@@ -485,13 +502,4 @@ fn test_granular_pause_staking() {
     // Stake should work again after resume
     client.stake(&user, &STAKE_AMOUNT);
     assert_eq!(client.get_staked_balance(&user), STAKE_AMOUNT * 2);
-    client.stake(&user, &STAKE_AMOUNT);
-    advance_ledger(&e, 5);
-
-    // Activate CLAIM_REWARDS granular pause via the contract's delegation function.
-    // Global is_paused remains false — only the granular bitmask bit is set.
-    client.set_claim_rewards_paused(&true);
-
-    // Claim MUST fail with ContractError::Paused (error code 14).
-    client.claim(&user);
 }

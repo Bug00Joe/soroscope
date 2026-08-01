@@ -210,7 +210,9 @@ fn test_add_admin_fails_with_non_admin_approvers() {
     let outsider = Address::generate(&env);
     let approvers = vec![&env, outsider];
     let result = client.try_add_admin(&approvers, &new_admin);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    // Approver count meets the threshold, so this fails on the approver not
+    // being an admin rather than on the signature count.
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]
@@ -290,7 +292,8 @@ fn test_unauthorized_admin_removal() {
     let outsider = Address::generate(&env);
     let approvers = vec![&env, outsider];
     let result = client.try_remove_admin(&approvers, &admins[1]);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    // The outsider satisfies the count but is not an admin.
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 // â”€â”€â”€ Full rotation cycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -358,7 +361,9 @@ fn test_removed_admin_cannot_approve_operations() {
     let new_admin = Address::generate(&env);
     let bad_approvers = vec![&env, admins[2].clone()];
     let result = client.try_add_admin(&bad_approvers, &new_admin);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    // Once removed, the former admin is rejected as unauthorized rather than
+    // counting toward the signature threshold.
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]

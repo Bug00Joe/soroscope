@@ -43,6 +43,74 @@ pub fn get_lp_fee_bps(e: Env) -> i128
 - Maximum: 100 bps (1%)
 - Default: 5 bps (0.05%)
 
+`DataKey::Admin` is the pool fee admin (may differ from guard admins after rotation). Use `set_fee`, `configure_fee_oracle`, `sync_fee_from_oracle`, and `execute_fee_update`.
+
+## Swapping and slippage protection
+
+The pool exposes both swap directions. Which one you use decides which side you
+can bound, and every swap needs one side bounded — an unbounded swap can be
+sandwiched, since an attacker who front-runs the transaction moves the price so
+the same trade fills far worse.
+
+| Function | You fix | You bound | Returns |
+|----------|---------|-----------|---------|
+| `swap(to, buy_a, out, in_max)` | the output `out` | the input, via `in_max` | input actually paid |
+| `swap_exact_in(to, buy_a, amount_in, min_amount_out)` | the input `amount_in` | the output, via `min_amount_out` | output actually delivered |
+
+`buy_a` selects direction: `true` sends token B in and takes token A out, `false`
+is the reverse.
+
+### Exact-input swaps
+
+`swap_exact_in` computes the output from the live reserves and current fee, then
+refuses the trade unless it clears the caller's floor:
+
+```rust
+// Quote against current state, then accept 1% of drift.
+let quoted = pool.get_amount_out(false, 1_000)?;
+let min_amount_out = quoted * 99 / 100;
+
+let received = pool.swap_exact_in(trader, false, 1_000, min_amount_out)?;
+assert!(received >= min_amount_out);
+```
+
+If the price moves between the quote and execution such that the output would
+fall below `min_amount_out`, the call returns `Error::SlippageExceeded` and no
+tokens move.
+
+Passing `min_amount_out = 0` disables the check. Do that only when any fill is
+genuinely acceptable.
+
+### Quoting
+
+let out = pool.get_amount_out(buy_a, amount_in)?;  // output for a given input
+let needed = pool.get_amount_in(buy_a, amount_out)?; // input for a given output
+let (reserve_a, reserve_b) = pool.get_reserves()?;
+
+Both quotes are read-only and only describe the state they were read from. Derive
+a bound from them; do not assume the swap will match them. Rounding always
+resolves in the pool's favour, so `get_amount_in(get_amount_out(x))` may come
+back slightly above `x`.
+
+### Exact-output swaps
+
+For `swap`, the output is fixed by the caller and delivered exactly or not at
+all, so `in_max` is the meaningful bound — a minimum-output parameter would be
+satisfied by construction. Set `in_max` to the quoted input plus your tolerance:
+
+let quoted_in = pool.get_amount_in(false, 900)?;
+pool.swap(trader, false, 900, quoted_in * 101 / 100)?;
+
+### Swap errors
+
+- `Error::SlippageExceeded`: the bound you set was not met (`min_amount_out` for
+  `swap_exact_in`, `in_max` for `swap`). Expected under normal price movement;
+  re-quote and retry.
+- `Error::InvalidAmount`: `amount_in` was zero or negative, or `min_amount_out`
+  was negative.
+- `Error::InsufficientLiquidity`: the reserves cannot support the trade, or the
+  input was too small to buy a single unit of output.
+- `Error::Paused`: swaps are currently paused by the guard.
 #### Deposit Flow with LP Fee
 
 1. User deposits `amount_a` and `amount_b` tokens
@@ -68,7 +136,6 @@ pub fn get_lp_fee_bps(e: Env) -> i128
 4. User receives `net_amount_a` and `net_amount_b`
 5. Fees remain in reserves, increasing value for remaining LP shares
 
-**Example** (5 bps fee):
 - Burn: 1,000 shares (1% of 100,000 total)
 - Gross payout: 1,000 tokenA + 1,000 tokenB
 - Fee: 1,000 * 5 / 10,000 = 0.5 of each token
@@ -89,18 +156,15 @@ pub fn get_lp_fee_bps(e: Env) -> i128
 #### Events
 
 **LP Deposit Fee Event**:
-```rust
 pub struct LpDepositFeeEvent {
     pub depositor: Address,
     pub gross_shares: i128,
     pub fee_shares: i128,
     pub net_shares: i128,
 }
-```
 Topic: `("lp_fee", "deposit")`
 
 **LP Withdrawal Fee Event**:
-```rust
 pub struct LpWithdrawFeeEvent {
     pub withdrawer: Address,
     pub gross_amount_a: i128,
@@ -109,8 +173,6 @@ pub struct LpWithdrawFeeEvent {
     pub fee_amount_b: i128,
     pub net_amount_a: i128,
     pub net_amount_b: i128,
-}
-```
 Topic: `("lp_fee", "withdraw")`
 
 ### 3. Emergency Pause Controls
@@ -130,27 +192,20 @@ Topic: `("lp_fee", "withdraw")`
 ## Core Functions
 
 ### Initialization
-```rust
 pub fn initialize(e: Env, admin: Address, token_a: Address, token_b: Address) -> Result<(), Error>
-```
 
 ### Liquidity Management
-```rust
 // Deposit tokens, receive LP shares (minus LP fee)
 pub fn deposit(e: Env, to: Address, amount_a: i128, amount_b: i128) -> Result<i128, Error>
 
 // Burn LP shares, receive tokens (minus LP fee)
 pub fn withdraw(e: Env, to: Address, share_amount: i128) -> Result<(i128, i128), Error>
-```
 
 ### Trading
-```rust
 // Swap tokens with slippage protection
 pub fn swap(e: Env, to: Address, buy_a: bool, out: i128, in_max: i128) -> Result<i128, Error>
-```
 
 ### Admin Functions
-```rust
 // Set trading fee (swap fee)
 pub fn set_fee(e: Env, fee_bps: i128) -> Result<(), Error>
 
@@ -164,7 +219,6 @@ pub fn configure_fee_oracle(e: Env, oracle: Address, base_fee_bps: i128, timeloc
 pub fn guard_pause(e: Env, admin: Address, operation: u32, paused: bool) -> Result<(), Error>
 pub fn emergency_pause(e: Env, approvers: Vec<Address>) -> Result<(), Error>
 pub fn resume(e: Env, approvers: Vec<Address>) -> Result<(), Error>
-```
 
 ## Storage Keys
 
@@ -181,7 +235,6 @@ pub fn resume(e: Env, approvers: Vec<Address>) -> Result<(), Error>
 
 ## Constants
 
-```rust
 // Trading fees
 pub const MAX_FEE_BPS: i128 = 100;              // 1% max trading fee
 pub const DEFAULT_BASE_FEE_BPS: i128 = 30;      // 0.3% default trading fee
@@ -189,7 +242,6 @@ pub const DEFAULT_BASE_FEE_BPS: i128 = 30;      // 0.3% default trading fee
 // LP fees
 pub const DEFAULT_LP_FEE_BPS: i128 = 5;         // 0.05% default LP fee
 pub const MAX_LP_FEE_BPS: i128 = 100;           // 1% max LP fee
-```
 
 ## Error Codes
 
@@ -215,7 +267,6 @@ pub const MAX_LP_FEE_BPS: i128 = 100;           // 1% max LP fee
 Run comprehensive test suite:
 ```bash
 cargo test --package liquidity_pool
-```
 
 Key test scenarios:
 - ✅ LP fee calculation accuracy
