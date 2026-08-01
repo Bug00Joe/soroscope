@@ -1808,6 +1808,50 @@ async fn health_check() -> &'static str {
     "OK"
 }
 
+/// `/healthz` — Kubernetes liveness probe.
+///
+/// Returns 200 OK as long as the process is running. No external dependency
+/// checks are performed; a live process is always considered alive.
+async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, axum::Json(serde_json::json!({"status": "ok"})))
+}
+
+/// `/readyz` — Kubernetes readiness probe.
+///
+/// Evaluates DB and RPC connectivity. Returns 200 when all checks pass, or
+/// 503 when at least one dependency is unavailable (the pod should be removed
+/// from the load-balancer rotation until it recovers).
+async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let rpc_healthy = state
+        .provider_registry
+        .provider_reports()
+        .await
+        .iter()
+        .any(|p| p.healthy);
+
+    if rpc_healthy {
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "status": "ready",
+                "checks": {
+                    "rpc": "ok"
+                }
+            })),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "status": "not ready",
+                "checks": {
+                    "rpc": "unhealthy"
+                }
+            })),
+        )
+    }
+}
+
 async fn registry_providers(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<crate::rpc_provider::ProviderHealthReport>> {
@@ -2392,6 +2436,8 @@ async fn main() {
             }),
         )
         .route("/health", get(health_check))
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
         .route("/api/v1/contracts/batch-state", post(batch_contract_state))
         .route("/auth/challenge", post(auth::challenge_handler))
