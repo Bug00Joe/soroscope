@@ -1807,7 +1807,9 @@ impl SimulationEngine {
         // 2. Build transaction XDR
         let invoke_op = InvokeHostFunctionOp {
             host_function,
-            auth: vec![].try_into().unwrap(),
+            auth: vec![]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Too many auth entries".to_string()))?,
         };
 
         let operation = Operation {
@@ -1823,7 +1825,9 @@ impl SimulationEngine {
             seq_num: SequenceNumber(0),
             cond: Preconditions::None,
             memo: Memo::None,
-            operations: vec![operation].try_into().unwrap(),
+            operations: vec![operation]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to create operations".to_string()))?,
             ext: TransactionExt::V1(soroban_data),
         };
 
@@ -3007,7 +3011,11 @@ impl SimulationEngine {
             .map_err(|e| SimulationError::XdrError(format!("Encode invocation: {e}")))?;
         let nonce_input = [&public_key[..], &invocation_xdr[..]].concat();
         let nonce_hash = Sha256::digest(&nonce_input);
-        let nonce = i64::from_be_bytes(nonce_hash[..8].try_into().unwrap());
+        let nonce = i64::from_be_bytes(
+            nonce_hash[..8]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to derive nonce from hash".to_string()))?,
+        );
 
         // 3. Compute the network id
         let network_id: [u8; 32] = Sha256::digest(network_passphrase.as_bytes()).into();
