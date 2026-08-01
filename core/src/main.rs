@@ -1,8 +1,10 @@
+```rust
 #![allow(dead_code)]
 
 mod auth;
 mod benchmarks;
 mod cache;
+mod call_trace_parser;
 mod comparison;
 mod errors;
 pub mod fee_analytics;
@@ -16,16 +18,29 @@ mod merkle_tree;
 mod parser;
 mod routing;
 pub mod rpc_provider;
+mod rpc_throttle;
 mod runner;
 mod simulation;
 mod simulation_service;
+mod trace_propagation;
 mod wasm_branch_analysis;
+mod worker_pool;
 mod ws;
 
 use crate::cache::{ContractCache, SimulationCache};
 use crate::comparison::{CompareMode, RegressionFlag, RegressionReport, ResourceDelta};
 use crate::errors::AppError;
+use crate::fee_analytics::{FeeAnalyticsEngine, MarketConditions, ModelBreakdown};
+use crate::fee_collector::{FeeCollector, FeeCollectorConfig};
+use crate::fee_store::FeeStore;
+use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
+use crate::insights::InsightsEngine;
+use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
 use crate::merkle_tree::MerkleTree;
+use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
+use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
+use crate::ws::SimulationBus;
+use crate::worker_pool::EventWorkerPool;
 use axum::{
     extract::{Json, Multipart, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
@@ -49,11 +64,12 @@ use crate::fee_store::FeeStore;
 use crate::gas_golfing::{GasGolfingAnalyzer, GasGolfingReport};
 use crate::insights::InsightsEngine;
 use crate::jobs::{JobQueue, JobQueueConfig, JobWorker};
-use crate::merkle_tree::MerkleTree;
 use crate::rpc_provider::{ProviderRegistry, RegistryConfig, RegistrySnapshot, RpcProvider};
 use crate::simulation::{SimulationEngine, SimulationMode, SimulationResult};
 use crate::ws::SimulationBus;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use utoipa::{OpenApi, ToSchema};
@@ -77,11 +93,11 @@ struct AppConfig {
     /// Unused in the MVP in-memory implementation — present so the config
     /// surface is stable when Redis is wired in.
     redis_url: String,
-    /// JSON-encoded array of RPC provider objects.  Example:
+    /// JSON-encoded array of RPC provider objects. Example:
     /// ```json
     /// [
-    ///   {"name":"stellar-testnet","url":"https://soroban-testnet.stellar.org"},
-    ///   {"name":"blockdaemon","url":"https://soroban.blockdaemon.com","auth_header":"X-API-Key","auth_value":"KEY"}
+    ///   {"name":"stellar-testnet","url":"[https://soroban-testnet.stellar.org](https://soroban-testnet.stellar.org)"},
+    ///   {"name":"blockdaemon","url":"[https://soroban.blockdaemon.com](https://soroban.blockdaemon.com)","auth_header":"X-API-Key","auth_value":"KEY"}
     /// ]
     /// ```
     /// When empty or absent the engine falls back to `soroban_rpc_url`.
@@ -117,6 +133,9 @@ struct AppConfig {
     /// Max concurrent jobs (default 10).
     #[serde(default = "default_max_concurrent_jobs")]
     max_concurrent_jobs: usize,
+    /// Number of threads for the dedicated event worker pool.
+    #[serde(default = "default_event_worker_threads")]
+    event_worker_threads: usize,
     /// Fee data collection interval in seconds (default 5).
     #[serde(default = "default_fee_collection_interval")]
     fee_collection_interval_secs: u64,
@@ -139,6 +158,24 @@ struct AppConfig {
     /// L2 treats it as stale. Default 100 ≈ 8 minutes at 5 s/ledger.
     #[serde(default = "default_max_ledger_age")]
     max_ledger_age: u32,
+    /// Comma-separated list of origins the CORS layer allows on the public
+    /// API routes (issue #670). Empty means any origin — development fallback.
+    #[serde(default)]
+    cors_allowed_origins: String,
+    /// Broadcast channel capacity for the WebSocket event bus (issue #565).
+    /// Controls the per-subscriber in-flight event buffer; slow consumers
+    /// that fall behind receive `RecvError::Lagged` (backpressure via drop).
+    /// Clamped to [16, 65536]. Default 256.
+    #[serde(default = "default_event_bus_capacity")]
+    event_bus_capacity: usize,
+    /// Emit structured JSON log lines instead of the default human-readable
+    /// format (issue #572). Set `LOG_FORMAT=json` to enable.
+    log_format_json: bool,
+    /// Comma-separated list of allowed CORS origins.
+    /// Example: `http://localhost:3000,https://app.example.com`
+    /// When empty, defaults to `*` (allow all origins).
+    #[serde(default = "default_allowed_origins")]
+    allowed_origins: String,
 }
 
 fn default_health_check_interval() -> u64 {
@@ -169,6 +206,10 @@ fn default_max_concurrent_jobs() -> usize {
     10
 }
 
+fn default_event_worker_threads() -> usize {
+    4
+}
+
 fn default_fee_collection_interval() -> u64 {
     5
 }
@@ -195,6 +236,15 @@ fn default_max_ledger_age() -> u32 {
     100
 }
 
+fn default_event_bus_capacity() -> usize {
+    256
+fn default_allowed_origins() -> String {
+    // Empty string means: fall back to allow-all (*).
+    // Operators set ALLOWED_ORIGINS=http://localhost:3000,https://app.example.com
+    // in their environment to restrict access.
+    String::new()
+}
+
 fn load_config() -> Result<AppConfig, ConfigError> {
     dotenvy::dotenv().ok();
 
@@ -216,12 +266,17 @@ fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("database_url", "sqlite://soroscope.db")?
         .set_default("job_timeout_secs", 300)?
         .set_default("max_concurrent_jobs", 10)?
+        .set_default("event_worker_threads", 4)?
         .set_default("fee_collection_interval_secs", 5)?
         .set_default("fee_retention_days", 30)?
         .set_default("fee_analysis_enabled", true)?
         .set_default("emergency_verification_paused", false)?
         .set_default("disk_cache_path", "")?
         .set_default("max_ledger_age", 100)?
+        .set_default("cors_allowed_origins", "")?
+        .set_default("event_bus_capacity", 256)?
+        .set_default("log_format_json", false)?
+        .set_default("allowed_origins", "")?
         .build()?;
 
     settings.try_deserialize()
@@ -315,6 +370,8 @@ pub struct AppState {
     /// Job queue for background task processing
     #[allow(dead_code)]
     job_queue: JobQueue,
+    /// Dedicated worker pool for heavy event parsing
+    event_worker_pool: Arc<EventWorkerPool>,
     /// Fee market analytics engine
     fee_analytics_engine: FeeAnalyticsEngine,
     /// Fee data store
@@ -326,12 +383,21 @@ pub struct AppState {
 }
 
 #[derive(Clone)]
-struct AppMetrics {
+pub(crate) struct AppMetrics {
     registry: Registry,
     simulation_latency_seconds: HistogramVec,
     rpc_error_count_total: IntCounterVec,
     simulation_requests_total: IntCounterVec,
     resource_utilization_percent: prometheus::GaugeVec,
+    /// Host-wide CPU usage percentage (0–100) sampled by the system
+    /// alarm monitor (issue #592). Label keys are static so scrapers
+    /// see a single `local` series.
+    pub(crate) host_cpu_usage_percent: prometheus::GaugeVec,
+    /// Host-wide memory usage percentage (0–100) sampled by the
+    /// system alarm monitor (issue #592).
+    pub(crate) host_memory_usage_percent: prometheus::GaugeVec,
+    /// Resident memory size of the SoroScope process itself, in bytes.
+    pub(crate) process_memory_bytes: prometheus::GaugeVec,
 }
 
 impl AppMetrics {
@@ -366,11 +432,35 @@ impl AppMetrics {
             ),
             &["resource"],
         )?;
+        let host_cpu_usage_percent = prometheus::GaugeVec::new(
+            Opts::new(
+                "host_cpu_usage_percent",
+                "Host-wide CPU usage percentage (0-100) sampled by the system alarm monitor",
+            ),
+            &["host"],
+        )?;
+        let host_memory_usage_percent = prometheus::GaugeVec::new(
+            Opts::new(
+                "host_memory_usage_percent",
+                "Host-wide memory usage percentage (0-100) sampled by the system alarm monitor",
+            ),
+            &["host"],
+        )?;
+        let process_memory_bytes = prometheus::GaugeVec::new(
+            Opts::new(
+                "process_memory_bytes",
+                "Resident memory size of the SoroScope process in bytes",
+            ),
+            &["process"],
+        )?;
 
         registry.register(Box::new(simulation_latency_seconds.clone()))?;
         registry.register(Box::new(rpc_error_count_total.clone()))?;
         registry.register(Box::new(simulation_requests_total.clone()))?;
         registry.register(Box::new(resource_utilization_percent.clone()))?;
+        registry.register(Box::new(host_cpu_usage_percent.clone()))?;
+        registry.register(Box::new(host_memory_usage_percent.clone()))?;
+        registry.register(Box::new(process_memory_bytes.clone()))?;
 
         Ok(Self {
             registry,
@@ -378,6 +468,9 @@ impl AppMetrics {
             rpc_error_count_total,
             simulation_requests_total,
             resource_utilization_percent,
+            host_cpu_usage_percent,
+            host_memory_usage_percent,
+            process_memory_bytes,
         })
     }
 }
@@ -446,8 +539,6 @@ pub struct TestnetAverages {
     /// Average CPU instructions for typical Soroban transactions
     pub cpu_instructions: u64,
     /// Average RAM bytes for typical Soroban transactions
-    pub ram_bytes: u64,
-    /// Average ledger read bytes for typical Soroban transactions
     pub ledger_read_bytes: u64,
     /// Average ledger write bytes for typical Soroban transactions
     pub ledger_write_bytes: u64,
@@ -881,14 +972,13 @@ async fn analyze(
                 tracing::warn!("No ledger entries available for Merkle tree generation");
                 None
             } else {
-                let mut tree = MerkleTree::new(256);
                 let mut tree = MerkleTree::new(32);
                 if let Err(e) = tree.build(leaves) {
                     tracing::error!("Failed to generate Merkle tree: {}", e);
                     None
                 } else {
-                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
                     tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count());
+                    tracing::info!("Generated Merkle tree with {} leaves", tree.leaf_count);
                     Some(tree.get_root_hex())
                 }
             }
@@ -943,6 +1033,40 @@ async fn analyze_wasm(
     let wasm_bytes = BASE64
         .decode(&payload.wasm_bytes)
         .map_err(|e| AppError::BadRequest(format!("Invalid base64 WASM data: {}", e)))?;
+
+    // ── Validate WASM size: reject files larger than 2 MB ────────────────────
+    const MAX_WASM_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+    if wasm_bytes.len() > MAX_WASM_SIZE {
+        return Err(AppError::BadRequest(format!(
+            "WASM file too large: {} bytes exceeds the {} byte (2 MB) limit",
+            wasm_bytes.len(),
+            MAX_WASM_SIZE,
+        )));
+    }
+
+    // ── Validate WASM magic bytes: must start with \0asm (0x00 0x61 0x73 0x6D) ──
+    const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
+    if wasm_bytes.len() < 8 || wasm_bytes[..4] != WASM_MAGIC {
+        return Err(AppError::BadRequest(
+            "Invalid WASM file: missing magic bytes (\\0asm). \
+             Please upload a compiled Soroban .wasm contract."
+                .to_string(),
+        ));
+    }
+
+    // ── Validate WASM binary version: must be version 1 (little-endian) ──────
+    let version = u32::from_le_bytes([
+        wasm_bytes[4],
+        wasm_bytes[5],
+        wasm_bytes[6],
+        wasm_bytes[7],
+    ]);
+    if version != 1 {
+        return Err(AppError::BadRequest(format!(
+            "Unsupported WASM version: {}. Expected version 1.",
+            version
+        )));
+    }
 
     let function_name = payload.function_name.clone();
     let args = payload.args.clone().unwrap_or_default();
@@ -1529,7 +1653,7 @@ async fn fee_analytics(
     paths(
         analyze, analyze_wasm, optimize_limits, compare_handler,
         auth::challenge_handler, auth::verify_handler, auth::jwks_handler,
-        fee_recommend, fee_history, fee_analytics
+        fee_recommend, fee_history, fee_analytics, batch_contract_state
     ),
     components(schemas(
         AnalyzeRequest, AnalyzeWasmRequest, AnalyzeWasmBranchesRequest,
@@ -1550,7 +1674,8 @@ async fn fee_analytics(
         crate::fee_store::LedgerFeeSample,
         crate::fee_analytics::MarketConditions,
         crate::fee_analytics::ModelBreakdown,
-        crate::fee_analytics::TrendDirection
+        crate::fee_analytics::TrendDirection,
+        BatchStateItem, BatchStateRequest, ContractStateResult, BatchStateResponse
     )),
     tags(
         (name = "Analysis", description = "Soroban contract resource analysis endpoints"),
@@ -1566,8 +1691,166 @@ async fn fee_analytics(
 )]
 struct ApiDoc;
 
+#[derive(Debug, Deserialize, ToSchema)]
+struct BatchStateItem {
+    /// Contract identifier used to group the response.
+    contract_id: String,
+    /// Base64-encoded ledger key XDR values to fetch for this contract.
+    key_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct BatchStateRequest {
+    contracts: Vec<BatchStateItem>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct ContractStateResult {
+    contract_id: String,
+    entries: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct BatchStateResponse {
+    contracts: Vec<ContractStateResult>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/contracts/batch-state",
+    request_body = BatchStateRequest,
+    responses((status = 200, description = "Contract state snapshot batch", body = BatchStateResponse)),
+    tag = "Contracts"
+)]
+async fn batch_contract_state(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<BatchStateRequest>,
+) -> Result<Json<BatchStateResponse>, AppError> {
+    if request.contracts.is_empty()
+        || request
+            .contracts
+            .iter()
+            .any(|item| item.contract_id.trim().is_empty() || item.key_paths.is_empty())
+    {
+        return Err(AppError::BadRequest(
+            "contracts must contain a contract_id and at least one key path".to_string(),
+        ));
+    }
+
+    let keys: Vec<String> = request
+        .contracts
+        .iter()
+        .flat_map(|item| item.key_paths.iter().cloned())
+        .collect();
+    let provider = state
+        .provider_registry
+        .healthy_providers()
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("no healthy RPC provider available".to_string()))?;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getLedgerEntries",
+        "params": { "keys": keys }
+    });
+    let client = reqwest::Client::new();
+    let mut rpc_request = client.post(&provider.url).json(&body);
+    if let (Some(header), Some(value)) = (&provider.auth_header, &provider.auth_value) {
+        rpc_request = rpc_request.header(header, value);
+    }
+    let rpc_response: serde_json::Value = rpc_request
+        .send()
+        .await
+        .map_err(|error| AppError::Internal(format!("RPC request failed: {error}")))?
+        .error_for_status()
+        .map_err(|error| AppError::Internal(format!("RPC returned an error: {error}")))?
+        .json()
+        .await
+        .map_err(|error| AppError::Internal(format!("invalid RPC response: {error}")))?;
+    if let Some(error) = rpc_response.get("error") {
+        return Err(AppError::Internal(format!("RPC node error: {error}")));
+    }
+    let entries = rpc_response
+        .pointer("/result/entries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(Json(group_batch_entries(&request.contracts, &entries)))
+}
+
+fn group_batch_entries(
+    requested: &[BatchStateItem],
+    entries: &[serde_json::Value],
+) -> BatchStateResponse {
+    BatchStateResponse {
+        contracts: requested
+            .iter()
+            .map(|item| ContractStateResult {
+                contract_id: item.contract_id.clone(),
+                entries: entries
+                    .iter()
+                    .filter(|entry| {
+                        entry
+                            .get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|key| item.key_paths.iter().any(|path| path == key))
+                    })
+                    .cloned()
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
 async fn health_check() -> &'static str {
     "OK"
+}
+
+/// `/healthz` — Kubernetes liveness probe.
+///
+/// Returns 200 OK as long as the process is running. No external dependency
+/// checks are performed; a live process is always considered alive.
+async fn healthz() -> impl IntoResponse {
+    (StatusCode::OK, axum::Json(serde_json::json!({"status": "ok"})))
+}
+
+/// `/readyz` — Kubernetes readiness probe.
+///
+/// Evaluates DB and RPC connectivity. Returns 200 when all checks pass, or
+/// 503 when at least one dependency is unavailable (the pod should be removed
+/// from the load-balancer rotation until it recovers).
+async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let rpc_healthy = state
+        .provider_registry
+        .provider_reports()
+        .await
+        .iter()
+        .any(|p| p.healthy);
+
+    if rpc_healthy {
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "status": "ready",
+                "checks": {
+                    "rpc": "ok"
+                }
+            })),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "status": "not ready",
+                "checks": {
+                    "rpc": "unhealthy"
+                }
+            })),
+        )
+    }
 }
 
 async fn registry_providers(
@@ -1592,14 +1875,27 @@ async fn registry_gossip(
 
 #[tokio::main]
 async fn main() {
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info");
     }
 
-    tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // ── Tracing init (#572: JSON format + x-request-id correlation) ────
+    let log_json = env::var("LOG_FORMAT").map(|v| v.to_lowercase() == "json").unwrap_or(false);
+    let filter = EnvFilter::from_default_env();
+    if log_json {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     tracing::info!("SoroScope Starting...");
 
@@ -1874,6 +2170,108 @@ async fn main() {
         return;
     }
 
+    // ── CLI: reindex subcommand ──────────────────────────────────────────
+    if args.len() > 1 && args[1] == "reindex" {
+        // Parse --start-ledger and --end-ledger flags
+        let mut start_ledger: Option<u64> = None;
+        let mut end_ledger: Option<u64> = None;
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--start-ledger" if i + 1 < args.len() => {
+                    start_ledger = args[i + 1].parse::<u64>().ok();
+                    i += 2;
+                }
+                "--end-ledger" if i + 1 < args.len() => {
+                    end_ledger = args[i + 1].parse::<u64>().ok();
+                    i += 2;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        let (start, end) = match (start_ledger, end_ledger) {
+            (Some(s), Some(e)) if s <= e => (s, e),
+            _ => {
+                eprintln!(
+                    "Usage: soroscope-cli reindex --start-ledger <N> --end-ledger <M>"
+                );
+                eprintln!("\nRe-fetch and re-process ledger fee data for the given ledger range.");
+                eprintln!("\nArguments:");
+                eprintln!("  --start-ledger <N>  First ledger sequence to re-index (inclusive)");
+                eprintln!("  --end-ledger   <M>  Last ledger sequence to re-index (inclusive)");
+                std::process::exit(1);
+            }
+        };
+
+        tracing::info!(
+            start_ledger = start,
+            end_ledger = end,
+            "Starting historical ledger re-indexing"
+        );
+
+        let db_pool = sqlx::SqlitePool::connect(&config.database_url)
+            .await
+            .expect("Failed to connect to database");
+
+        sqlx::migrate!()
+            .run(&db_pool)
+            .await
+            .expect("Failed to run database migrations");
+
+        let fee_store = Arc::new(FeeStore::new(db_pool));
+        let providers = build_providers(&config);
+        let registry = Arc::new(ProviderRegistry::new(providers));
+
+        let collector_config = FeeCollectorConfig {
+            collection_interval_secs: 5,
+            batch_size: 50,
+            request_timeout: std::time::Duration::from_secs(30),
+        };
+
+        let collector = Arc::new(FeeCollector::new(
+            Arc::clone(&registry),
+            Arc::clone(&fee_store),
+            collector_config,
+        ));
+
+        let total = end - start + 1;
+        let mut processed: u64 = 0;
+        let mut errors: u64 = 0;
+
+        for seq in start..=end {
+            match collector.fetch_and_store_ledger(seq).await {
+                Ok(()) => {
+                    processed += 1;
+                    if processed % 100 == 0 || processed == total {
+                        tracing::info!(
+                            processed = processed,
+                            total = total,
+                            errors = errors,
+                            "Re-indexing progress"
+                        );
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    tracing::warn!(
+                        ledger = seq,
+                        error = %e,
+                        "Failed to re-index ledger, skipping"
+                    );
+                }
+            }
+        }
+
+        println!(
+            "Re-indexing complete. Processed: {processed}/{total}, Errors: {errors}"
+        );
+
+        return;
+    }
+
     tracing::info!("Starting SoroScope API Server...");
 
     let auth_state = Arc::new(auth::AuthState::new(
@@ -1886,6 +2284,10 @@ async fn main() {
         "SEP-10 server account: {}",
         auth_state.server_stellar_address()
     );
+    // Broadcast channel used to stop all background worker loops on process exit.
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let mut worker_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // ── Multi-node RPC setup ────────────────────────────────────────────
     let providers = build_providers(&config);
     let provider_names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
@@ -1900,14 +2302,14 @@ async fn main() {
 
     // Spawn background health checker.
     let health_interval = std::time::Duration::from_secs(config.health_check_interval_secs);
-    let _health_handle = registry.spawn_health_checker(health_interval);
+    worker_handles.push(registry.spawn_health_checker(health_interval, shutdown_tx.subscribe()));
     tracing::info!(
         interval_secs = config.health_check_interval_secs,
         "Background RPC health checker started"
     );
 
     let gossip_interval = std::time::Duration::from_secs(config.gossip_interval_secs);
-    let _gossip_handle = registry.spawn_gossip_task(gossip_interval);
+    worker_handles.push(registry.spawn_gossip_task(gossip_interval, shutdown_tx.subscribe()));
     tracing::info!(
         interval_secs = config.gossip_interval_secs,
         "Provider gossip sync started"
@@ -1921,6 +2323,11 @@ async fn main() {
         "Simulation timeout configured"
     );
     tracing::info!(mode = ?simulation_mode, "Simulation mode configured");
+
+    // Initialize the dedicated event worker pool
+    let event_pool = Arc::new(EventWorkerPool::new(config.event_worker_threads)
+        .expect("Failed to build event worker pool"));
+    tracing::info!("Dedicated event worker pool initialized with {} threads", config.event_worker_threads);
 
     // ── Fee Market Setup ────────────────────────────────────────────────
     let database_url = &config.database_url;
@@ -1948,8 +2355,8 @@ async fn main() {
     let job_queue = JobQueue::new(database_url, &config.redis_url, job_queue_config.clone())
         .await
         .expect("Failed to initialize job queue");
-    // ── WebSocket event bus ─────────────────────────────────────────────
-    let simulation_bus = SimulationBus::new();
+    // ── WebSocket event bus (#565: configurable bounded channel) ───────
+    let simulation_bus = SimulationBus::with_capacity(config.event_bus_capacity);
 
     let job_worker = JobWorker::new(
         job_queue.clone(),
@@ -1963,9 +2370,10 @@ async fn main() {
     )
     .with_bus(Arc::clone(&simulation_bus));
 
-    tokio::spawn(async move {
-        job_worker.run().await;
-    });
+    let bus_worker_shutdown = shutdown_tx.subscribe();
+    worker_handles.push(tokio::spawn(async move {
+        job_worker.run(bus_worker_shutdown).await;
+    }));
 
     // ── Distributed Job Queue Setup ─────────────────────────────────────
     let job_config = JobQueueConfig {
@@ -1979,7 +2387,7 @@ async fn main() {
         .expect("Failed to initialize JobQueue");
 
     // Spawn background cleanup task
-    job_queue.spawn_cleanup_task();
+    worker_handles.push(job_queue.spawn_cleanup_task(shutdown_tx.subscribe()));
 
     // Spawn worker
     let worker = JobWorker::new(
@@ -1989,9 +2397,10 @@ async fn main() {
         job_config,
     );
 
-    tokio::spawn(async move {
-        worker.run().await;
-    });
+    let worker_shutdown = shutdown_tx.subscribe();
+    worker_handles.push(tokio::spawn(async move {
+        worker.run(worker_shutdown).await;
+    }));
 
     tracing::info!("Job queue and worker started (Redis backend)");
 
@@ -2009,9 +2418,10 @@ async fn main() {
             collector_config,
         ));
 
-        tokio::spawn(async move {
-            collector.run_collection_loop().await;
-        });
+        let fee_shutdown = shutdown_tx.subscribe();
+        worker_handles.push(tokio::spawn(async move {
+            collector.run_collection_loop(fee_shutdown).await;
+        }));
 
         tracing::info!(
             interval_secs = config.fee_collection_interval_secs,
@@ -2021,18 +2431,33 @@ async fn main() {
         // Schedule periodic cleanup of old fee data
         let cleanup_store = Arc::clone(&fee_store);
         let retention_days = config.fee_retention_days;
-        tokio::spawn(async move {
+        let mut retention_shutdown = shutdown_tx.subscribe();
+        worker_handles.push(tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
             loop {
-                interval.tick().await;
-                if let Err(e) = cleanup_store
-                    .cleanup_old_samples(retention_days as i32)
-                    .await
-                {
-                    tracing::error!(error = %e, "Failed to cleanup old fee samples");
+                tokio::select! {
+                    biased;
+                    _ = retention_shutdown.recv() => {
+                        tracing::info!("Fee retention cleanup task shutting down");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = retention_shutdown.recv() => {
+                                tracing::info!("Fee retention cleanup task shutting down");
+                                break;
+                            }
+                            result = cleanup_store.cleanup_old_samples(retention_days as i32) => {
+                                if let Err(e) = result {
+                                    tracing::error!(error = %e, "Failed to cleanup old fee samples");
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        });
+        }));
     } else {
         tracing::info!("Fee market analysis is disabled");
     }
@@ -2041,6 +2466,10 @@ async fn main() {
     let sled_db = sled::open("soroscope_cache").expect("Failed to open sled database");
     let simulation_cache = SimulationCache::new(&sled_db);
     let contract_cache = Arc::new(ContractCache::new(&sled_db));
+
+    let app_metrics = Arc::new(
+        AppMetrics::new().expect("Failed to initialize Prometheus metrics"),
+    );
 
     let app_state = Arc::new(AppState {
         engine: SimulationEngine::with_registry_and_cache(
@@ -2053,12 +2482,27 @@ async fn main() {
         gas_golfing_analyzer: GasGolfingAnalyzer::new(),
         simulation_timeout,
         job_queue,
+        event_worker_pool: Arc::clone(&event_pool),
         fee_analytics_engine,
         fee_store,
-        metrics: Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics")),
+        metrics: Arc::clone(&app_metrics),
         simulation_bus,
     });
 
+    // ── Issue #592: System Resource Alarm Monitor ────────────────────────
+    //
+    // Spawn an internal tokio task that periodically samples host CPU
+    // and RAM usage, logs warnings, and POSTs to the alarm webhook
+    // when either metric exceeds the configured threshold. Uses edge-
+    // triggered hysteresis so a sustained saturation produces exactly
+    // one breach notification (plus a recovery notification when the
+    // resource drops back below threshold).
+    let alarm_config = crate::sys_alarms::SysAlarmConfig::from_env();
+    let alarm_monitor = crate::sys_alarms::SysAlarmMonitor::new(alarm_config)
+        .with_metrics(Arc::clone(&app_metrics));
+    if let Some(_alarm_handle) = alarm_monitor.spawn() {
+        tracing::info!("System resource alarm monitor spawned (issue #592)");
+    }
     // Clone the bus Arc before app_state is moved into the router, so the gRPC
     // server can subscribe to the same broadcast channel.
     let grpc_port: u16 = env::var("GRPC_PORT")
@@ -2071,6 +2515,21 @@ async fn main() {
     let grpc_bus = Arc::clone(&app_state.simulation_bus);
 
     let cors = CorsLayer::new().allow_origin(Any);
+    let cors = soroscope_core::cors::build_cors_layer(&config.cors_allowed_origins);
+    let cors = {
+        let raw = config.allowed_origins.trim().to_string();
+        if raw.is_empty() {
+            // No restriction configured: allow all origins.
+            CorsLayer::new().allow_origin(Any)
+        } else {
+            // Parse comma-separated origins and allow only those.
+            use axum::http::HeaderValue;
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse::<HeaderValue>().ok())
+                .collect();
+            CorsLayer::new().allow_origin(origins)
+    };
 
     let protected = Router::new()
         .route("/analyze", post(analyze))
@@ -2090,7 +2549,10 @@ async fn main() {
             }),
         )
         .route("/health", get(health_check))
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
+        .route("/api/v1/contracts/batch-state", post(batch_contract_state))
         .route("/auth/challenge", post(auth::challenge_handler))
         .route("/auth/verify", post(auth::verify_handler))
         .route("/auth/emergency-pause", post(auth::emergency_pause_handler))
@@ -2105,7 +2567,14 @@ async fn main() {
         .merge(protected)
         .layer(Extension(auth_state))
         .layer(cors)
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
+        // ── x-request-id (#572) ───────────────────────────────────────
+        // Assigns a UUID to every inbound request under the `x-request-id`
+        // header and propagates it to outbound responses so clients can
+        // correlate log lines with specific requests.
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(app_state); // ← thread AppState through all handlers
 
     let bind_addr = format!("0.0.0.0:{}", config.server_port);
@@ -2122,14 +2591,84 @@ async fn main() {
         listener.local_addr().unwrap()
     );
 
+    // ── Graceful shutdown (#573: SIGTERM / SIGINT) ────────────────────
     // ── Spawn gRPC server on its dedicated port ──────────────────────────
     tokio::spawn(async move {
         grpc::serve(grpc_addr, grpc_bus).await;
     });
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx.clone()))
         .await
         .expect("Server failed to start");
+
+    // After the HTTP server stops, wait for all background worker loops to exit.
+    tracing::info!(
+        workers = worker_handles.len(),
+        "Waiting for background workers to shut down"
+    );
+    join_worker_handles(worker_handles).await;
+    tracing::info!("All background workers stopped");
+}
+
+/// Wait for Ctrl+C / SIGTERM, then broadcast shutdown to all worker loops.
+async fn shutdown_signal(shutdown_tx: tokio::sync::broadcast::Sender<()>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        .with_graceful_shutdown(shutdown_signal())
+
+    tracing::info!("Server shut down gracefully.");
+
+/// Waits for SIGTERM (Unix) or Ctrl-C (all platforms) and resolves once either
+/// signal is received, allowing axum to finish in-flight requests before exit.
+async fn shutdown_signal() {
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received; notifying background workers");
+    let _ = shutdown_tx.send(());
+
+/// Await every worker handle, aborting any that hang past a short grace period.
+async fn join_worker_handles(handles: Vec<tokio::task::JoinHandle<()>>) {
+    const WORKER_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    for handle in handles {
+        let abort = handle.abort_handle();
+        match tokio::time::timeout(WORKER_JOIN_TIMEOUT, handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) if e.is_cancelled() => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "Background worker exited with join error"),
+            Err(_) => {
+                abort.abort();
+                tracing::warn!(
+                    "Background worker did not exit within {:?}; aborted",
+                    WORKER_JOIN_TIMEOUT
+                );
+    let sigterm = std::future::pending::<()>();
+
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT (Ctrl-C), shutting down…");
+        _ = sigterm => {
+            tracing::info!("Received SIGTERM, shutting down…");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2140,6 +2679,30 @@ async fn main() {
 mod tests {
     use super::*;
     use crate::simulation::{SimulationError, SorobanResources};
+
+    #[test]
+    fn batch_state_groups_entries_by_requested_contract() {
+        let requested = vec![
+            BatchStateItem {
+                contract_id: "CA".to_string(),
+                key_paths: vec!["key-a".to_string()],
+            },
+            BatchStateItem {
+                contract_id: "CB".to_string(),
+                key_paths: vec!["key-b".to_string()],
+            },
+        ];
+        let entries = vec![
+            serde_json::json!({"key": "key-b", "xdr": "value-b"}),
+            serde_json::json!({"key": "key-a", "xdr": "value-a"}),
+        ];
+
+        let response = group_batch_entries(&requested, &entries);
+        assert_eq!(response.contracts.len(), 2);
+        assert_eq!(response.contracts[0].contract_id, "CA");
+        assert_eq!(response.contracts[0].entries[0]["xdr"], "value-a");
+        assert_eq!(response.contracts[1].entries[0]["xdr"], "value-b");
+    }
 
     #[test]
     fn test_error_mapping_node_error() {
@@ -2291,11 +2854,13 @@ mod tests {
 
     fn build_test_app() -> Router {
         use std::sync::Arc;
+        let event_pool = Arc::new(EventWorkerPool::new(4).unwrap());
         let app_state = Arc::new(AppState {
             engine: SimulationEngine::new("https://test.example.com".to_string()),
             cache: SimulationCache::new(),
             insights_engine: InsightsEngine::new(),
             simulation_timeout: std::time::Duration::from_secs(30),
+            event_worker_pool: Arc::clone(&event_pool),
         });
         let auth_state = Arc::new(auth::AuthState::new(
             "test-secret".to_string(),
@@ -2460,3 +3025,5 @@ async fn analyze_simulation(
     let result = simulation_service.record_and_analyze(metric).await?;
     Ok(Json(result))
 }
+
+```
