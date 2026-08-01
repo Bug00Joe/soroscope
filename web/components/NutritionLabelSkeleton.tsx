@@ -11,8 +11,8 @@ export const NutritionLabelSkeleton: React.FC = () => {
     ];
 
     return (
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-6 font-mono animate-pulse">
-            <div className="border-b-2 border-[#30363d] pb-2 mb-4 flex justify-between items-end">
+        <div className="bg-[var(--bg-card)] border border-[var(--border-default)] rounded-lg p-6 font-mono animate-pulse">
+            <div className="border-b-2 border-[var(--border-default)] pb-2 mb-4 flex justify-between items-end">
                 <h2 className="text-2xl font-black text-[#c9d1d9] uppercase tracking-wider">Nutrition Facts</h2>
                 <span className="text-xs text-[#8b949e]">Per Transaction</span>
             </div>
@@ -31,7 +31,7 @@ export const NutritionLabelSkeleton: React.FC = () => {
                         </div>
 
                         {/* Progress Bar Container */}
-                        <div className="h-2 w-full bg-[#0d1117] rounded-full overflow-hidden border border-[#30363d]">
+                        <div className="h-2 w-full bg-[var(--bg-elevated)] rounded-full overflow-hidden border border-[var(--border-default)]">
                             <div className="h-full w-1/3 bg-[#30363d] rounded-full" />
                         </div>
 
@@ -43,7 +43,7 @@ export const NutritionLabelSkeleton: React.FC = () => {
                 ))}
             </div>
 
-            <div className="mt-6 pt-4 border-t-[4px] border-[#30363d] flex flex-col gap-1.5">
+            <div className="mt-6 pt-4 border-t-[4px] border-[var(--border-default)] flex flex-col gap-1.5">
                 <div className="h-2.5 w-full bg-[#30363d] rounded" />
                 <div className="h-2.5 w-5/6 bg-[#30363d] rounded" />
             </div>
