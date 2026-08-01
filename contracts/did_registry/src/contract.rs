@@ -1,13 +1,19 @@
 use crate::storage_types::{
-    Attestation, Claim, DIDDocument, Service, VerificationMethod, ATTESTATIONS, CLAIMS, DID_INDEX,
-    DID_DOCUMENT, OWNER,
+    Attestation, Claim, DIDDocument, DIDMetadata, Service, VerificationMethod, ATTESTATIONS,
+    CLAIMS, DID_INDEX, DID_DOCUMENT, DID_METADATA, OWNER,
 };
 use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, String, Vec};
 
 pub trait DIDRegistryTrait {
     fn initialize(e: Env, owner: Address);
 
-    fn register_did(e: Env, did: String, document: DIDDocument);
+    fn register_did(e: Env, did: String, document: DIDDocument, expiration_timestamp: Option<u64>);
+
+    fn revoke_did(e: Env, did: String);
+
+    fn set_expiration(e: Env, did: String, expiration_timestamp: Option<u64>);
+
+    fn is_did_valid(e: Env, did: String) -> bool;
 
     fn update_did_document(e: Env, did: String, document: DIDDocument);
 
@@ -88,6 +94,29 @@ impl DIDRegistry {
         }
         false
     }
+
+    fn _is_did_valid(e: &Env, did: String) -> bool {
+        let key = (DID_DOCUMENT, did.clone());
+        if !e.storage().persistent().has(&key) {
+            return false;
+        }
+
+        let metadata_key = (DID_METADATA, did.clone());
+        let metadata: DIDMetadata = e.storage().persistent().get(&metadata_key).unwrap();
+
+        if metadata.revocation_bitmap != 0 {
+            return false;
+        }
+
+        if let Some(expiration) = metadata.expiration_timestamp {
+            let current_ledger_time = e.ledger().timestamp();
+            if current_ledger_time >= expiration {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[contractimpl]
@@ -100,7 +129,7 @@ impl DIDRegistryTrait for DIDRegistry {
         e.storage().persistent().set(&DID_INDEX, &Vec::new(&e));
     }
 
-    fn register_did(e: Env, did: String, document: DIDDocument) {
+    fn register_did(e: Env, did: String, document: DIDDocument, expiration_timestamp: Option<u64>) {
         Self::require_owner_auth(&e);
 
         let key = (DID_DOCUMENT, did.clone());
@@ -108,8 +137,47 @@ impl DIDRegistryTrait for DIDRegistry {
             panic!("DID already registered");
         }
 
+        let metadata = DIDMetadata {
+            expiration_timestamp,
+            revocation_bitmap: 0,
+        };
+        let metadata_key = (DID_METADATA, did.clone());
+
         e.storage().persistent().set(&key, &document);
+        e.storage().persistent().set(&metadata_key, &metadata);
         Self::append_did_index(&e, &did);
+    }
+
+    fn revoke_did(e: Env, did: String) {
+        Self::require_owner_auth(&e);
+
+        let key = (DID_DOCUMENT, did.clone());
+        if !e.storage().persistent().has(&key) {
+            panic!("DID not found");
+        }
+
+        let metadata_key = (DID_METADATA, did.clone());
+        let mut metadata: DIDMetadata = e.storage().persistent().get(&metadata_key).unwrap();
+        metadata.revocation_bitmap = 1;
+        e.storage().persistent().set(&metadata_key, &metadata);
+    }
+
+    fn set_expiration(e: Env, did: String, expiration_timestamp: Option<u64>) {
+        Self::require_owner_auth(&e);
+
+        let key = (DID_DOCUMENT, did.clone());
+        if !e.storage().persistent().has(&key) {
+            panic!("DID not found");
+        }
+
+        let metadata_key = (DID_METADATA, did.clone());
+        let mut metadata: DIDMetadata = e.storage().persistent().get(&metadata_key).unwrap();
+        metadata.expiration_timestamp = expiration_timestamp;
+        e.storage().persistent().set(&metadata_key, &metadata);
+    }
+
+    fn is_did_valid(e: Env, did: String) -> bool {
+        Self::_is_did_valid(&e, did)
     }
 
     fn update_did_document(e: Env, did: String, document: DIDDocument) {
@@ -244,6 +312,10 @@ impl DIDRegistryTrait for DIDRegistry {
     }
 
     fn get_did_document(e: Env, did: String) -> DIDDocument {
+        if !Self::_is_did_valid(&e, did.clone()) {
+            panic!("DID is invalid (expired or revoked)");
+        }
+
         let key = (DID_DOCUMENT, did.clone());
         e.storage().persistent().get(&key).unwrap()
     }

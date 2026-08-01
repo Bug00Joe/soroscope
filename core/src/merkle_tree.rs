@@ -249,15 +249,16 @@ impl MerkleTree {
 }
 
 #[cfg(test)]
+fn make_tree(leaves: &[&str]) -> MerkleTree {
+    let mut tree = MerkleTree::new(32);
+    let data: Vec<Vec<u8>> = leaves.iter().map(|s| s.as_bytes().to_vec()).collect();
+    tree.build(data).expect("tree builds");
+    tree
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_tree(leaves: &[&str]) -> MerkleTree {
-        let mut tree = MerkleTree::new(32);
-        let data: Vec<Vec<u8>> = leaves.iter().map(|s| s.as_bytes().to_vec()).collect();
-        tree.build(data).expect("tree builds");
-        tree
-    }
 
     #[test]
     fn builds_tree_and_generates_valid_proofs_for_each_leaf() {
@@ -391,26 +392,82 @@ mod tests {
     }
 
     #[test]
-    fn test_tree_deterministic_root() {
-        let data = vec![b"test".to_vec(), b"data".to_vec()];
-        let mut t1 = MerkleTree::new(32);
-        let mut t2 = MerkleTree::new(32);
-        t1.build(data.clone()).unwrap();
-        t2.build(data).unwrap();
-        assert_eq!(t1.root, t2.root);
-    }
+fn test_tree_deterministic_root() {
+    let data = vec![b"test".to_vec(), b"data".to_vec()];
+    let mut t1 = MerkleTree::new(32);
+    let mut t2 = MerkleTree::new(32);
+    t1.build(data.clone()).unwrap();
+    t2.build(data).unwrap();
+    assert_eq!(t1.root, t2.root);
+}
 
-    // ── #491: Even and odd leaf count tests with reference values ────────
-    // ── Even and odd leaf count tests with reference values ────────────────
+}
 
-    #[test]
-    fn test_even_leaf_count_root_matches_reference() {
+// ── #491: Even and odd leaf count tests with reference values ────────
+// ── Even and odd leaf count tests with reference values ────────────────
+
+#[test]
+fn test_even_leaf_count_root_matches_reference() {
+    // Reference computed with double SHA-256 leaves + sorted hash_pair
+    // (identical algorithm, verified independently).
+    // Leaves: ["a", "b", "c", "d"] — 4 leaves (even).
+    // Expected root: 5f934c91e9d5e70bccd99cbfcdc5c1c252f4e717e6bda7b599c0d86e4ce1e293
+    let tree = make_tree(&["a", "b", "c", "d"]);
+    let expected = "5f934c91e9d5e70bccd99cbfcdc5c1c252f4e717e6bda7b599c0d86e4ce1e293";
+    assert_eq!(tree.get_root_hex(), expected);
+}
+
+fn test_odd_leaf_count_root_matches_reference() {
+    // Leaves: ["a", "b", "c"] — 3 leaves (odd).
+    // The last leaf is paired with itself when building the next level.
+    // Expected root: 3334bf169bd4337da65ca7ed1b63c09fa0b77886bedf7cd0cc4b9353dd07dd59
+    let tree = make_tree(&["a", "b", "c"]);
+    let expected = "3334bf169bd4337da65ca7ed1b63c09fa0b77886bedf7cd0cc4b9353dd07dd59";
+
+fn test_single_leaf_root_matches_reference() {
+    // Single leaf: double SHA-256("solo") with no pairing.
+    // Single leaf: SHA-256("solo") with no pairing.
+    // Expected root: 0018e0e3babbc9f34cfaadf921b6e92dea1318e245a364dd929ed1257a40fa0c
+    let tree = make_tree(&["solo"]);
+    let expected = "0018e0e3babbc9f34cfaadf921b6e92dea1318e245a364dd929ed1257a40fa0c";
+
+fn test_two_leaf_root_matches_reference() {
+    // Leaves: ["alice", "bob"] — 2 leaves (even).
+    // Expected root: d6289d374fe3c1f34cf4bd88937fa65ca7a069223d2b31fb4e3a2792eaa5d815
+    let tree = make_tree(&["alice", "bob"]);
+    let expected = "d6289d374fe3c1f34cf4bd88937fa65ca7a069223d2b31fb4e3a2792eaa5d815";
+
+fn test_five_leaf_root_matches_reference() {
+    // Leaves: ["a", "b", "c", "d", "e"] — 5 leaves (odd).
+    // Expected root: fe6d1a83ed5b116f4e61ac59d42668258e169e5998e3986e189a0fc72cc40487
+    let tree = make_tree(&["a", "b", "c", "d", "e"]);
+    let expected = "fe6d1a83ed5b116f4e61ac59d42668258e169e5998e3986e189a0fc72cc40487";
+
+fn test_even_leaves_all_proofs_valid() {
+    // 4 leaves — all proofs must verify against the known root.
+    for i in 0..tree.leaf_count() {
+        let proof = tree.generate_proof(i).unwrap();
+        assert!(proof.verify(), "proof for leaf {i} failed");
+
+fn test_odd_leaves_all_proofs_valid() {
+    // 3 leaves — includes the "duplicate-last" padding case.
+
+// ── Property-based fuzz tests for MerkleTree ──────────────────────────────────
+//
+// Run with: cargo test (as part of the normal test suite)
+// For libfuzzer-based fuzzing, see core/fuzz/fuzz_targets/merkle_build.rs
+// To run with higher iteration counts:
+//   PROPTEST_CASES=10000 cargo test fuzz_
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_leaf() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 0..=256)
+
         // Reference computed with double SHA-256 leaf hashing + sorted hash_pair
         // (identical algorithm to `MerkleTree::hash_leaf` / `hash_pair`).
-        // Leaves: ["a", "b", "c", "d"] — 4 leaves (even).
-        let tree = make_tree(&["a", "b", "c", "d"]);
-        let expected = "5f934c91e9d5e70bccd99cbfcdc5c1c252f4e717e6bda7b599c0d86e4ce1e293";
-        assert_eq!(tree.get_root_hex(), expected);
     }
 
     #[test]
