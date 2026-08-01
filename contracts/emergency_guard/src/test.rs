@@ -30,7 +30,7 @@ fn setup(
     (env, client, std_admins, guardian)
 }
 
-<<<<<<< HEAD
+// ── PauseType bitmask unit tests ──────────────────────────────────────────────
 fn setup_with_roles(
     threshold: u32,
     admins: Vec<Address>,
@@ -43,9 +43,6 @@ fn setup_with_roles(
     client.initialize_with_roles(&admins, &guardians, &threshold);
     (env, client)
 }
-=======
-// ── PauseType bitmask unit tests ──────────────────────────────────────────────
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
 
 #[test]
 fn test_granular_pause_types() {
@@ -139,7 +136,11 @@ fn test_initialize_stores_admins_and_threshold() {
 }
 
 #[test]
-<<<<<<< HEAD
+fn test_initialize_stores_guardian() {
+    let (_env, client, _admins, guardian) = setup(1, 2);
+    let guardians: Vec<Address> = client.get_guardians().iter().collect();
+    assert_eq!(guardians.len(), 1);
+    assert!(guardians.contains(&guardian));
 fn test_initialize_with_distinct_guardians_and_admins() {
     let env = Env::default();
     env.mock_all_auths();
@@ -152,13 +153,6 @@ fn test_initialize_with_distinct_guardians_and_admins() {
     assert!(client.is_admin(&admins.get(0).unwrap()));
     assert!(client.is_guardian(&guardians.get(0).unwrap()));
     assert!(!client.is_guardian(&admins.get(0).unwrap()));
-=======
-fn test_initialize_stores_guardian() {
-    let (_env, client, _admins, guardian) = setup(1, 2);
-    let guardians: Vec<Address> = client.get_guardians().iter().collect();
-    assert_eq!(guardians.len(), 1);
-    assert!(guardians.contains(&guardian));
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
 }
 
 #[test]
@@ -458,6 +452,8 @@ fn test_add_admin_fails_with_non_admin_approvers() {
     let outsider = Address::generate(&env);
     let approvers = vec![&env, outsider];
     let result = client.try_add_admin(&approvers, &new_admin);
+    // Approver count meets the threshold, so this fails on the approver not
+    // being an admin rather than on the signature count.
     assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
@@ -519,6 +515,38 @@ fn test_remove_admin_fails_when_would_drop_below_threshold() {
 }
 
 #[test]
+fn test_unauthorized_admin_removal() {
+    let (env, client, admins) = setup(1, 2);
+    let outsider = Address::generate(&env);
+    let approvers = vec![&env, outsider];
+    let result = client.try_remove_admin(&approvers, &admins[1]);
+    // The outsider satisfies the count but is not an admin.
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
+}
+
+// â”€â”€â”€ Full rotation cycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+#[test]
+fn test_full_admin_rotation_add_then_remove_old() {
+    let (env, client, admins) = setup(2, 3);
+    let new_admin = Address::generate(&env);
+
+    // Step 1: add new admin
+    let approvers = vec![&env, admins[0].clone(), admins[1].clone()];
+    client.add_admin(&approvers, &new_admin);
+    assert_eq!(client.get_admins().len(), 4);
+
+    // Step 2: remove one of the original admins using new quorum
+    let approvers2 = vec![&env, admins[0].clone(), new_admin.clone()];
+    client.remove_admin(&approvers2, &admins[2]);
+
+    let stored: Vec<Address> = client.get_admins().iter().collect();
+    assert_eq!(stored.len(), 3);
+    assert!(!stored.contains(&admins[2]));
+    assert!(stored.contains(&new_admin));
+}
+
+#[test]
 fn test_rotate_admin() {
     let (env, client, admins, _guardian) = setup(2, 3);
     let old_admin = admins[2].clone();
@@ -558,6 +586,58 @@ fn test_removed_admin_cannot_approve_operations() {
     let new_admin = Address::generate(&env);
     let bad_approvers = vec![&env, admins[2].clone()];
     let result = client.try_add_admin(&bad_approvers, &new_admin);
+    // Once removed, the former admin is rejected as unauthorized rather than
+    // counting toward the signature threshold.
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
+}
+
+#[test]
+fn test_newly_added_admin_can_approve_operations() {
+    let (env, client, admins) = setup(1, 2);
+    let new_admin = Address::generate(&env);
+
+    // Add new_admin
+    let approvers = vec![&env, admins[0].clone()];
+    client.add_admin(&approvers, &new_admin);
+
+    // new_admin approves a pause operation
+    client.set_pause(&new_admin, &PauseType::SWAP, &true);
+    assert!(client.is_paused(&PauseType::SWAP));
+}
+
+// â”€â”€â”€ get_admins / get_threshold â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+#[test]
+fn test_get_admins_returns_all_admins() {
+    let (_env, client, admins) = setup(1, 3);
+    let stored: Vec<Address> = client.get_admins().iter().collect();
+    assert_eq!(stored.len(), 3);
+    for a in &admins {
+        assert!(stored.contains(a));
+    }
+}
+
+#[test]
+fn test_get_threshold_returns_correct_value() {
+    let (_env, client, _admins) = setup(2, 4);
+    assert_eq!(client.get_threshold(), 2);
+}
+
+// â”€â”€â”€ Pause / resume integration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+#[test]
+fn test_set_pause_by_single_admin() {
+    let (_env, client, admins) = setup(1, 2);
+    client.set_pause(&admins[0], &PauseType::DEPOSIT, &true);
+    assert!(client.is_paused(&PauseType::DEPOSIT));
+    assert!(!client.is_paused(&PauseType::SWAP));
+}
+
+#[test]
+fn test_set_pause_rejected_for_non_admin() {
+    let (env, client, _admins) = setup(1, 2);
+    let outsider = Address::generate(&env);
+    let result = client.try_set_pause(&outsider, &PauseType::SWAP, &true);
     assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 

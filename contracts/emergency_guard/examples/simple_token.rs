@@ -147,7 +147,6 @@ impl SimpleToken {
 
     /// Resume transfers
     pub fn resume_transfers(env: Env) {
-        DefaultEmergencyGuard::unpause(&env, PauseType::TRANSFER).expect("Unauthorized");
         let admin: Address = env
             .storage()
             .instance()

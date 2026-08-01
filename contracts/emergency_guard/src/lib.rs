@@ -2,6 +2,10 @@
 
 #[cfg(feature = "contract")]
 use soroban_sdk::{contract, contractimpl};
+use soroban_sdk::{contracterror, contracttype, log, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, log, Address, Env, String, Vec,
+};
 use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
 /// Granular pause types using bitmask for efficient storage.
@@ -18,6 +22,10 @@ impl PauseType {
     pub const BURN: u32 = 1 << 5;
     pub const CREATE_PAIR: u32 = 1 << 6;
     pub const STAKE: u32 = 1 << 7;
+    /// Pause reward claims independently of the global paused flag
+    pub const CLAIM_REWARDS: u32 = 1 << 8;
+    /// Pause borrow / flash loan operations
+    pub const BORROW: u32 = 1 << 8;
 
     pub fn new(value: u32) -> Self {
         PauseType(value)
@@ -77,26 +85,11 @@ pub enum GuardError {
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
-#[contract]
 #[cfg_attr(feature = "contract", contract)]
 pub struct EmergencyGuard;
 
 #[cfg_attr(feature = "contract", contractimpl)]
 impl EmergencyGuard {
-<<<<<<< HEAD
-    /// Initialize the emergency guard with a list of admins and required threshold.
-    /// Guardians default to the same set as admins so existing integrations keep working.
-    pub fn initialize(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), GuardError> {
-        Self::initialize_with_roles(env, admins.clone(), admins, threshold)
-    }
-
-    /// Initialize the emergency guard with distinct admin and guardian roles.
-    pub fn initialize_with_roles(
-        env: Env,
-        admins: Vec<Address>,
-        guardians: Vec<Address>,
-        threshold: u32,
-=======
     /// Initialize with a set of admins (multi-sig threshold) and an initial guardian.
     ///
     /// - `admins`    – addresses that form the multi-sig quorum; can unpause and manage roles.
@@ -107,7 +100,15 @@ impl EmergencyGuard {
         admins: Vec<Address>,
         threshold: u32,
         guardian: Address,
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+    /// Initialize the emergency guard with a list of admins and required threshold.
+    /// Guardians default to the same set as admins so existing integrations keep working.
+    pub fn initialize(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), GuardError> {
+        Self::initialize_with_roles(env, admins.clone(), admins, threshold)
+    }
+
+    /// Initialize the emergency guard with distinct admin and guardian roles.
+    pub fn initialize_with_roles(
+        guardians: Vec<Address>,
     ) -> Result<(), GuardError> {
         if env.storage().instance().has(&GuardDataKey::Admins) {
             return Err(GuardError::AlreadyInitialized);
@@ -120,22 +121,15 @@ impl EmergencyGuard {
         guardians.push_back(guardian);
 
         env.storage().instance().set(&GuardDataKey::Admins, &admins);
-<<<<<<< HEAD
-        env.storage()
-            .instance()
-            .set(&GuardDataKey::Guardians, &guardians);
-        env.storage()
-            .instance()
-            .set(&GuardDataKey::SignatureThreshold, &threshold);
-        env.storage()
-            .instance()
-            .set(&GuardDataKey::PauseState, &PauseType::new(0));
-        emit_guard_initialized(&env, &admins, threshold);
-=======
         env.storage().instance().set(&GuardDataKey::SignatureThreshold, &threshold);
         env.storage().instance().set(&GuardDataKey::PauseState, &PauseType::new(0));
         env.storage().instance().set(&GuardDataKey::Guardians, &guardians);
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+        env.storage()
+            .instance()
+            .set(&GuardDataKey::Guardians, &guardians);
+            .set(&GuardDataKey::SignatureThreshold, &threshold);
+            .set(&GuardDataKey::PauseState, &PauseType::new(0));
+        emit_guard_initialized(&env, &admins, threshold);
         Ok(())
     }
 
@@ -162,17 +156,6 @@ impl EmergencyGuard {
         }
     }
 
-<<<<<<< HEAD
-    /// Set pause state for a specific operation (guardians only).
-    pub fn set_pause(
-        env: Env,
-        guardian: Address,
-        operation: u32,
-        paused: bool,
-    ) -> Result<(), GuardError> {
-        guardian.require_auth();
-        if !Self::is_guardian_internal(&env, &guardian) {
-=======
     pub fn get_pause_state(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -195,7 +178,10 @@ impl EmergencyGuard {
         let is_guardian = Self::is_guardian_internal(&env, &caller);
 
         if !is_admin && !is_guardian {
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+    /// Set pause state for a specific operation (guardians only).
+        guardian: Address,
+        guardian.require_auth();
+        if !Self::is_guardian_internal(&env, &guardian) {
             return Err(GuardError::Unauthorized);
         }
 
@@ -210,7 +196,7 @@ impl EmergencyGuard {
             .get(&GuardDataKey::PauseState)
             .unwrap_or(PauseType::new(0));
         state.set_paused(operation, paused);
-<<<<<<< HEAD
+        emit_pause_state_changed(&env, &admin, operation, paused);
         env.storage()
             .instance()
             .set(&GuardDataKey::PauseState, &state);
@@ -228,11 +214,8 @@ impl EmergencyGuard {
             },
         );
         log!(
-            &env,
             "Pause state updated: op={}, paused={}",
-            operation,
             paused
-        );
         emit_pause_state_changed(&env, &guardian, operation, paused);
         Ok(())
     }
@@ -264,10 +247,13 @@ impl EmergencyGuard {
 
     /// Resume all operations (requires admin multi-sig approval).
     pub fn resume(env: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
-        Self::check_admin_multi_sig(&env, &approvers)?;
+        Self::check_multi_sig(&env, &approvers)?;
+        let state = PauseType::new(0);
         env.storage()
             .instance()
             .set(&GuardDataKey::PauseState, &PauseType::new(0));
+            .set(&GuardDataKey::PauseState, &state);
+        Self::check_admin_multi_sig(&env, &approvers)?;
 
         emit_guard_event(
             &env,
@@ -320,7 +306,6 @@ impl EmergencyGuard {
         if !admins.iter().any(|a| a == new_admin) {
             admins.push_back(new_admin);
             env.storage().instance().set(&GuardDataKey::Admins, &admins);
-<<<<<<< HEAD
             emit_guard_event(
                 &env,
                 EmergencyGuardEvent {
@@ -335,7 +320,7 @@ impl EmergencyGuard {
             );
             emit_admin_added(&env, &approvers, &new_admin);
 =======
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+>>>>>>> main
         }
         Ok(())
     }
@@ -364,7 +349,7 @@ impl EmergencyGuard {
         if !found {
             return Err(GuardError::AdminNotFound);
         }
-<<<<<<< HEAD
+        env.storage().instance().set(&GuardDataKey::Admins, &new_admins);
 
         env.storage()
             .instance()
@@ -382,9 +367,6 @@ impl EmergencyGuard {
             },
         );
         emit_admin_removed(&env, &approvers, &admin);
-=======
-        env.storage().instance().set(&GuardDataKey::Admins, &new_admins);
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
         Ok(())
     }
 
@@ -395,6 +377,8 @@ impl EmergencyGuard {
         old_admin: Address,
         new_admin: Address,
     ) -> Result<(), GuardError> {
+        Self::check_multi_sig(&env, &approvers)?;
+        let threshold = Self::get_threshold(env.clone());
         Self::check_admin_multi_sig(&env, &approvers)?;
         let admins = Self::get_admins(env.clone());
         let threshold = Self::get_threshold(env.clone());
@@ -413,10 +397,12 @@ impl EmergencyGuard {
         if !found {
             return Err(GuardError::AdminNotFound);
         }
+
+        if new_admins.len() < threshold {
         if (new_admins.len() as u32) < threshold {
             return Err(GuardError::InvalidThreshold);
         }
-<<<<<<< HEAD
+        env.storage().instance().set(&GuardDataKey::Admins, &new_admins);
 
         env.storage()
             .instance()
@@ -435,8 +421,7 @@ impl EmergencyGuard {
         );
         log!(&env, "Admin rotated: {} to {}", old_admin, new_admin);
 =======
-        env.storage().instance().set(&GuardDataKey::Admins, &new_admins);
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+>>>>>>> main
         Ok(())
     }
 
@@ -490,7 +475,6 @@ impl EmergencyGuard {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-<<<<<<< HEAD
     /// Get list of current guardians.
     pub fn get_guardians(env: Env) -> Vec<Address> {
         env.storage()
@@ -500,8 +484,6 @@ impl EmergencyGuard {
     }
 
     /// Get required signature threshold.
-=======
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
     pub fn get_threshold(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -520,19 +502,14 @@ impl EmergencyGuard {
         Self::is_admin_internal(&env, &addr)
     }
 
-<<<<<<< HEAD
-    /// Check if an address is a guardian.
-    pub fn is_guardian_public(env: Env, addr: Address) -> bool {
-        Self::is_guardian_internal(&env, &addr)
-    }
-
-    /// Public wrapper to validate approvers against the stored threshold.
-=======
     pub fn is_guardian(env: Env, addr: Address) -> bool {
         Self::is_guardian_internal(&env, &addr)
     }
 
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+    /// Check if an address is a guardian.
+    pub fn is_guardian_public(env: Env, addr: Address) -> bool {
+
+    /// Public wrapper to validate approvers against the stored threshold.
     pub fn validate_multi_sig(env: Env, approvers: Vec<Address>) -> Result<(), GuardError> {
         Self::check_admin_multi_sig(&env, &approvers)
     }
@@ -554,17 +531,13 @@ impl EmergencyGuard {
             .instance()
             .get(&GuardDataKey::Guardians)
             .unwrap_or_else(|| Vec::new(env));
-<<<<<<< HEAD
-        guardians.iter().any(|a| a == *addr)
-    }
-
-    /// Verify that `approvers` contains at least `threshold` distinct valid admins,
-    /// each having provided their authorization.
-=======
         guardians.iter().any(|g| g == *addr)
     }
 
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+        guardians.iter().any(|a| a == *addr)
+
+    /// Verify that `approvers` contains at least `threshold` distinct valid admins,
+    /// each having provided their authorization.
     pub(crate) fn check_multi_sig(env: &Env, approvers: &Vec<Address>) -> Result<(), GuardError> {
         Self::check_admin_multi_sig(env, approvers)
     }
@@ -626,7 +599,7 @@ impl EmergencyGuard {
             Ok(())
         }
     }
-<<<<<<< HEAD
+
 }
 
 /// Default implementation of EmergencyGuardTrait using static methods
@@ -731,7 +704,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
         }
 
         // Verify threshold is valid
-        if threshold == 0 || threshold > admins.len() as u32 {
+        if threshold == 0 || threshold > admins.len() {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -772,7 +745,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
         let admins = Self::get_admins(env);
         let threshold = Self::get_threshold(env);
 
-        if admins.len() as u32 <= threshold {
+        if admins.len() <= threshold {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -814,14 +787,14 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
     }
 
     /// Check if address is an admin
-    fn is_admin(env: &Env, addr: &Address) -> bool {
+    fn is_admin(env: &Env, addr: Address) -> bool {
         let admins: Vec<Address> = env
             .storage()
             .instance()
             .get(&GuardDataKey::Admins)
             .unwrap_or_else(|| Vec::new(env));
 
-        admins.iter().any(|a| a == *addr)
+        admins.iter().any(|a| a == addr)
     }
 
     /// Rotate admin (multi-sig required)
@@ -833,7 +806,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
     ) -> Result<(), GuardError> {
         EmergencyGuard::check_multi_sig(env, &approvers)?;
 
-        let mut admins = Self::get_admins(env);
+        let admins = Self::get_admins(env);
         let threshold = Self::get_threshold(env);
 
         let mut found = false;
@@ -852,7 +825,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
 
         new_admins.push_back(new_admin.clone());
 
-        if (new_admins.len() as u32) < threshold {
+        if new_admins.len() < threshold {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -936,7 +909,6 @@ pub trait TokenEmergencyGuardTrait {
 
 #[cfg(test)]
 mod test;
-<<<<<<< HEAD
 
 pub trait EmergencyGuardTrait {
     fn check_not_paused(env: &Env, operation: u32) -> Result<(), GuardError>;
@@ -1042,4 +1014,4 @@ impl DefaultEmergencyGuard {
     }
 }
 =======
->>>>>>> e2e49c2 (feature(emergency-rbac): separate Guardian and Admin roles in EmergencyGuard)
+>>>>>>> main
