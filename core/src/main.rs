@@ -2169,6 +2169,108 @@ async fn main() {
         return;
     }
 
+    // ── CLI: reindex subcommand ──────────────────────────────────────────
+    if args.len() > 1 && args[1] == "reindex" {
+        // Parse --start-ledger and --end-ledger flags
+        let mut start_ledger: Option<u64> = None;
+        let mut end_ledger: Option<u64> = None;
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--start-ledger" if i + 1 < args.len() => {
+                    start_ledger = args[i + 1].parse::<u64>().ok();
+                    i += 2;
+                }
+                "--end-ledger" if i + 1 < args.len() => {
+                    end_ledger = args[i + 1].parse::<u64>().ok();
+                    i += 2;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        let (start, end) = match (start_ledger, end_ledger) {
+            (Some(s), Some(e)) if s <= e => (s, e),
+            _ => {
+                eprintln!(
+                    "Usage: soroscope-cli reindex --start-ledger <N> --end-ledger <M>"
+                );
+                eprintln!("\nRe-fetch and re-process ledger fee data for the given ledger range.");
+                eprintln!("\nArguments:");
+                eprintln!("  --start-ledger <N>  First ledger sequence to re-index (inclusive)");
+                eprintln!("  --end-ledger   <M>  Last ledger sequence to re-index (inclusive)");
+                std::process::exit(1);
+            }
+        };
+
+        tracing::info!(
+            start_ledger = start,
+            end_ledger = end,
+            "Starting historical ledger re-indexing"
+        );
+
+        let db_pool = sqlx::SqlitePool::connect(&config.database_url)
+            .await
+            .expect("Failed to connect to database");
+
+        sqlx::migrate!()
+            .run(&db_pool)
+            .await
+            .expect("Failed to run database migrations");
+
+        let fee_store = Arc::new(FeeStore::new(db_pool));
+        let providers = build_providers(&config);
+        let registry = Arc::new(ProviderRegistry::new(providers));
+
+        let collector_config = FeeCollectorConfig {
+            collection_interval_secs: 5,
+            batch_size: 50,
+            request_timeout: std::time::Duration::from_secs(30),
+        };
+
+        let collector = Arc::new(FeeCollector::new(
+            Arc::clone(&registry),
+            Arc::clone(&fee_store),
+            collector_config,
+        ));
+
+        let total = end - start + 1;
+        let mut processed: u64 = 0;
+        let mut errors: u64 = 0;
+
+        for seq in start..=end {
+            match collector.fetch_and_store_ledger(seq).await {
+                Ok(()) => {
+                    processed += 1;
+                    if processed % 100 == 0 || processed == total {
+                        tracing::info!(
+                            processed = processed,
+                            total = total,
+                            errors = errors,
+                            "Re-indexing progress"
+                        );
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    tracing::warn!(
+                        ledger = seq,
+                        error = %e,
+                        "Failed to re-index ledger, skipping"
+                    );
+                }
+            }
+        }
+
+        println!(
+            "Re-indexing complete. Processed: {processed}/{total}, Errors: {errors}"
+        );
+
+        return;
+    }
+
     tracing::info!("Starting SoroScope API Server...");
 
     let auth_state = Arc::new(auth::AuthState::new(

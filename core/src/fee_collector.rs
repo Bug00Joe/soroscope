@@ -402,6 +402,20 @@ impl FeeCollector {
         self.last_collected_sequence
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Fetch and store fee data for a single ledger sequence.
+    ///
+    /// Used by the `reindex` CLI subcommand to re-process historical ledgers.
+    /// The data is upserted so re-running over the same range is idempotent.
+    pub async fn fetch_and_store_ledger(&self, sequence: u64) -> Result<(), FeeCollectorError> {
+        let sample = self.fetch_ledger_fee_data(sequence).await?;
+        self.store
+            .upsert_ledger_sample(&sample)
+            .await
+            .map_err(|e| FeeCollectorError::StoreError(e.to_string()))?;
+        tracing::debug!(ledger = sequence, "Re-indexed ledger");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
