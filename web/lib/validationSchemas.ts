@@ -49,8 +49,9 @@ const u128Schema = z
     }
   }, 'u128 must be between 0 and 340282366920938463463374607431768211455');
 
-const boolSchema = z.enum(['true', 'false'], {
-  errorMap: () => ({ message: 'Boolean must be true or false' }),
+// zod v4 replaced the `errorMap` option with `error`.
+const boolSchema = z.enum(['true', 'false'] as const, {
+  error: 'Boolean must be true or false',
 });
 
 const stringSchema = z.string().max(4096, 'String must be at most 4096 characters');
