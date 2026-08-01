@@ -7,6 +7,8 @@
 //! `with_disk_cache` to attach an L2 store — when it is set, reads walk
 //! L1 → L2 → miss (and promote L2 hits into L1), and writes populate both
 //! layers so state survives restarts.
+
+pub mod disk;
 //!
 //! `ContractCache` follows the same L1/L2 shape for active ledger entries:
 //! a thread-safe in-memory LRU cache (`ledger_memory`, configurable TTL)

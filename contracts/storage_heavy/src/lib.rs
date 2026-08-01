@@ -35,6 +35,17 @@ impl StorageHeavyContract {
             .unwrap_or(Bytes::new(&env))
     }
 
+    /// Extends the lifetime of a persistent storage entry.
+    ///
+    /// The TTL is changed to `extend_to` ledgers only when its current value is
+    /// below `threshold`. This method intentionally requires no authorization,
+    /// allowing any caller to pay the network rent needed to keep an entry
+    /// available.
+    pub fn extend_ttl(env: Env, key: Symbol, threshold: u32, extend_to: u32) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
+    }
     /// Batch-write to persistent storage.
     /// Demonstrates the cost of N separate ledger-entry writes.
     pub fn batch_write_persistent(env: Env, keys: Vec<Symbol>, data_points: Vec<Bytes>) {

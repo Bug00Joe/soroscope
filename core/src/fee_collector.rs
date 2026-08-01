@@ -86,8 +86,11 @@ impl FeeCollector {
         }
     }
 
-    /// Run the background collection loop
-    pub async fn run_collection_loop(self: Arc<Self>) {
+    /// Run the background collection loop until a shutdown signal is received.
+    pub async fn run_collection_loop(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) {
         let mut interval =
             tokio::time::interval(Duration::from_secs(self.config.collection_interval_secs));
 
@@ -97,12 +100,21 @@ impl FeeCollector {
         );
 
         loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.recv() => {
+                    tracing::info!("Fee collector shutting down");
+                    break;
+                }
+                _ = interval.tick() => {
+                        result = self.collect_latest_fees() => {
+                            if let Err(e) = result {
+                                tracing::error!(error = %e, "Failed to collect fee data");
             interval.tick().await;
 
             if !self.leader_lock.try_acquire_or_renew().await {
                 tracing::debug!("not leader this cycle, skipping fee collection");
                 continue;
-            }
 
             let started_at = Instant::now();
             let result = self.collect_latest_fees().await;
@@ -113,18 +125,11 @@ impl FeeCollector {
 
             match result {
                 Ok(true) => {
-                    self.metrics
                         .events_processed_total
-                        .with_label_values(&["fee_collector"])
                         .inc();
-                }
                 Ok(false) => {}
                 Err(e) => {
-                    self.metrics
                         .indexing_errors_total
-                        .with_label_values(&["fee_collector"])
-                        .inc();
-                    tracing::error!(error = %e, "Failed to collect fee data");
                 }
             }
         }
@@ -421,6 +426,20 @@ impl FeeCollector {
         self.last_collected_sequence
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Fetch and store fee data for a single ledger sequence.
+    ///
+    /// Used by the `reindex` CLI subcommand to re-process historical ledgers.
+    /// The data is upserted so re-running over the same range is idempotent.
+    pub async fn fetch_and_store_ledger(&self, sequence: u64) -> Result<(), FeeCollectorError> {
+        let sample = self.fetch_ledger_fee_data(sequence).await?;
+        self.store
+            .upsert_ledger_sample(&sample)
+            .await
+            .map_err(|e| FeeCollectorError::StoreError(e.to_string()))?;
+        tracing::debug!(ledger = sequence, "Re-indexed ledger");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -433,5 +452,46 @@ mod tests {
         assert_eq!(config.collection_interval_secs, 5);
         assert_eq!(config.batch_size, 10);
         assert_eq!(config.request_timeout, Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn collection_loop_exits_when_shutdown_is_broadcast() {
+        let registry = ProviderRegistry::new(vec![crate::rpc_provider::RpcProvider {
+            name: "test".to_string(),
+            url: "http://127.0.0.1:9".to_string(),
+            auth_header: None,
+            auth_value: None,
+            advertise: None,
+        }]);
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite");
+        let store = Arc::new(FeeStore::new(pool));
+        let collector = Arc::new(FeeCollector::new(
+            registry,
+            store,
+            FeeCollectorConfig {
+                collection_interval_secs: 60,
+                batch_size: 1,
+                request_timeout: Duration::from_millis(50),
+            },
+        ));
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(async move {
+            collector.run_collection_loop(shutdown_rx).await;
+        });
+
+        // Give the loop a moment to start, then signal shutdown.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        shutdown_tx
+            .send(())
+            .expect("shutdown broadcast should succeed");
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("fee collector should exit promptly after shutdown")
+            .expect("fee collector task should not panic");
     }
 }
