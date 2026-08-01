@@ -325,12 +325,21 @@ pub struct AppState {
 }
 
 #[derive(Clone)]
-struct AppMetrics {
+pub(crate) struct AppMetrics {
     registry: Registry,
     simulation_latency_seconds: HistogramVec,
     rpc_error_count_total: IntCounterVec,
     simulation_requests_total: IntCounterVec,
     resource_utilization_percent: prometheus::GaugeVec,
+    /// Host-wide CPU usage percentage (0–100) sampled by the system
+    /// alarm monitor (issue #592). Label keys are static so scrapers
+    /// see a single `local` series.
+    pub(crate) host_cpu_usage_percent: prometheus::GaugeVec,
+    /// Host-wide memory usage percentage (0–100) sampled by the
+    /// system alarm monitor (issue #592).
+    pub(crate) host_memory_usage_percent: prometheus::GaugeVec,
+    /// Resident memory size of the SoroScope process itself, in bytes.
+    pub(crate) process_memory_bytes: prometheus::GaugeVec,
 }
 
 impl AppMetrics {
@@ -365,11 +374,35 @@ impl AppMetrics {
             ),
             &["resource"],
         )?;
+        let host_cpu_usage_percent = prometheus::GaugeVec::new(
+            Opts::new(
+                "host_cpu_usage_percent",
+                "Host-wide CPU usage percentage (0-100) sampled by the system alarm monitor",
+            ),
+            &["host"],
+        )?;
+        let host_memory_usage_percent = prometheus::GaugeVec::new(
+            Opts::new(
+                "host_memory_usage_percent",
+                "Host-wide memory usage percentage (0-100) sampled by the system alarm monitor",
+            ),
+            &["host"],
+        )?;
+        let process_memory_bytes = prometheus::GaugeVec::new(
+            Opts::new(
+                "process_memory_bytes",
+                "Resident memory size of the SoroScope process in bytes",
+            ),
+            &["process"],
+        )?;
 
         registry.register(Box::new(simulation_latency_seconds.clone()))?;
         registry.register(Box::new(rpc_error_count_total.clone()))?;
         registry.register(Box::new(simulation_requests_total.clone()))?;
         registry.register(Box::new(resource_utilization_percent.clone()))?;
+        registry.register(Box::new(host_cpu_usage_percent.clone()))?;
+        registry.register(Box::new(host_memory_usage_percent.clone()))?;
+        registry.register(Box::new(process_memory_bytes.clone()))?;
 
         Ok(Self {
             registry,
@@ -377,6 +410,9 @@ impl AppMetrics {
             rpc_error_count_total,
             simulation_requests_total,
             resource_utilization_percent,
+            host_cpu_usage_percent,
+            host_memory_usage_percent,
+            process_memory_bytes,
         })
     }
 }
@@ -2159,6 +2195,10 @@ async fn main() {
     let simulation_cache = SimulationCache::new(&sled_db);
     let contract_cache = Arc::new(ContractCache::new(&sled_db));
 
+    let app_metrics = Arc::new(
+        AppMetrics::new().expect("Failed to initialize Prometheus metrics"),
+    );
+
     let app_state = Arc::new(AppState {
         engine: SimulationEngine::with_registry_and_cache(
             Arc::clone(&registry),
@@ -2172,9 +2212,24 @@ async fn main() {
         job_queue,
         fee_analytics_engine,
         fee_store,
-        metrics: Arc::new(AppMetrics::new().expect("Failed to initialize Prometheus metrics")),
+        metrics: Arc::clone(&app_metrics),
         simulation_bus,
     });
+
+    // ── Issue #592: System Resource Alarm Monitor ────────────────────────
+    //
+    // Spawn an internal tokio task that periodically samples host CPU
+    // and RAM usage, logs warnings, and POSTs to the alarm webhook
+    // when either metric exceeds the configured threshold. Uses edge-
+    // triggered hysteresis so a sustained saturation produces exactly
+    // one breach notification (plus a recovery notification when the
+    // resource drops back below threshold).
+    let alarm_config = crate::sys_alarms::SysAlarmConfig::from_env();
+    let alarm_monitor = crate::sys_alarms::SysAlarmMonitor::new(alarm_config)
+        .with_metrics(Arc::clone(&app_metrics));
+    if let Some(_alarm_handle) = alarm_monitor.spawn() {
+        tracing::info!("System resource alarm monitor spawned (issue #592)");
+    }
 
     let cors = CorsLayer::new().allow_origin(Any);
 
