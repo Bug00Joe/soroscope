@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(feature = "contract")]
+use soroban_sdk::{contract, contractimpl};
+use soroban_sdk::{contracterror, contracttype, log, Address, Env, String, Vec};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, log, Address, Env, String, Vec,
 };
@@ -19,6 +22,8 @@ impl PauseType {
     pub const CREATE_PAIR: u32 = 1 << 6;
     /// Pause staking operations
     pub const STAKE: u32 = 1 << 7;
+    /// Pause reward claims independently of the global paused flag
+    pub const CLAIM_REWARDS: u32 = 1 << 8;
     /// Pause borrow / flash loan operations
     pub const BORROW: u32 = 1 << 8;
 
@@ -365,6 +370,7 @@ impl EmergencyGuard {
         let state = PauseType::new(0);
         env.storage()
             .instance()
+            .set(&GuardDataKey::PauseState, &PauseType::new(0));
             .set(&GuardDataKey::PauseState, &state);
 
         emit_guard_event(
@@ -481,9 +487,7 @@ impl EmergencyGuard {
             return Err(GuardError::AdminNotFound);
         }
 
-        new_admins.push_back(new_admin.clone());
-
-        if (new_admins.len() as u32) < threshold {
+        if new_admins.len() < threshold {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -681,7 +685,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
         }
 
         // Verify threshold is valid
-        if threshold == 0 || threshold > admins.len() as u32 {
+        if threshold == 0 || threshold > admins.len() {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -722,7 +726,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
         let admins = Self::get_admins(env);
         let threshold = Self::get_threshold(env);
 
-        if admins.len() as u32 <= threshold {
+        if admins.len() <= threshold {
             return Err(GuardError::InvalidThreshold);
         }
 
@@ -783,7 +787,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
     ) -> Result<(), GuardError> {
         EmergencyGuard::check_multi_sig(env, &approvers)?;
 
-        let mut admins = Self::get_admins(env);
+        let admins = Self::get_admins(env);
         let threshold = Self::get_threshold(env);
 
         let mut found = false;
@@ -802,7 +806,7 @@ impl EmergencyGuardTrait for DefaultEmergencyGuard {
 
         new_admins.push_back(new_admin.clone());
 
-        if (new_admins.len() as u32) < threshold {
+        if new_admins.len() < threshold {
             return Err(GuardError::InvalidThreshold);
         }
 
