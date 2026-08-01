@@ -3,6 +3,10 @@ name = "soroscope-core"
 version = "0.1.0"
 edition = "2021"
 
+# The root workspace only lists the contract crates as members, so opt out
+# explicitly — without this, cargo refuses to build the package at all.
+[workspace]
+
 [lib]
 name = "soroscope_core"
 path = "src/lib.rs"
@@ -54,6 +58,11 @@ rsa = "0.9"
 wasm-encoder = { version = "0.240", features = ["wasmparser"] }
 wasmparser = "0.240"
 rayon = "1.8"
+# Used by the host resource alarm monitor (issue #592) to sample CPU
+# and RAM utilisation for the local process. Default features include
+# everything we need: `system`, `process`, and the CPU usage diff.
+sysinfo = "0.32"
 
 [dev-dependencies]
 proptest = "1.4.0"
+tower = { version = "0.4", features = ["util"] }

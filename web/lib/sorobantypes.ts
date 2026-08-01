@@ -1,4 +1,13 @@
-export type SorobanType = 'address' | 'u32' | 'i128' | 'u128' | 'string' | 'symbol' | 'bool' | 'struct' | 'enum';
+export type SorobanType =
+  | 'address'
+  | 'u32'
+  | 'i128'
+  | 'u128'
+  | 'string'
+  | 'symbol'
+  | 'bool'
+  | 'struct'
+  | 'enum';
 
 /** Typed map of contract function input values from the simulation form. */
 export type SimulationInputs = Record<string, string | number | boolean>;
@@ -44,7 +53,8 @@ export interface InvocationResult {
   inputs: SimulationInputs;
   result?: unknown;
   error?: string;
-  errorType?: string; // Error type from backend (e.g., BAD_REQUEST, INTERNAL_SERVER_ERROR)
+  /** Error type from backend (e.g., BAD_REQUEST, INTERNAL_SERVER_ERROR) */
+  errorType?: string;
   /** Primary `/analyze` response payload for the latest invocation. */
   analysisReport?: ResourceReport;
   /** Backward-compatible alias for older stored history entries. */
@@ -112,6 +122,7 @@ export interface SimulationStateSnapshot {
 
 export interface ResourceReport extends SorobanResources {
   cost_stroops: number;
+  testnet_averages?: TestnetAverages;
   state_dependency: StateDependencyReport[] | null;
   ttl_analysis: TtlAnalysisApiReport | null;
   nutrition: NutritionReport;
@@ -119,7 +130,6 @@ export interface ResourceReport extends SorobanResources {
   call_graph_mermaid: string | null;
   state_snapshot: SimulationStateSnapshot | null;
   protocol_version: number;
-  testnet_averages?: TestnetAverages;
 }
 
 export type AnalyzeResponse = ResourceReport;
@@ -163,7 +173,7 @@ export const MOCK_CONTRACT_FUNCTIONS: ContractFunction[] = [
 export function generateMockResult(functionName: string, inputs: SimulationInputs): unknown {
   const results: Record<string, unknown> = {
     transfer: { success: true, transaction_hash: '0x' + Math.random().toString(16).slice(2) },
-    balance: Math.floor(Math.random() * 1000000),
+    balance: Math.floor(Math.random() * 1_000_000),
     mint: { success: true, amount_minted: inputs.amount },
     symbol: 'USDC',
     decimals: 6,
@@ -216,3 +226,27 @@ export function generateMockResourceCost(): ResourceCost {
     transaction_size_bytes: Math.floor(Math.random() * 2 * 1024),
   };
 }
+
+export interface FeeBumpOption {
+  label: string;
+  multiplier: number;
+  feeStroops: number;
+  feeXlm: string;
+  description: string;
+}
+
+export interface FeeEstimate {
+  minResourceFeeStroops: number;
+  classicFeeStroops: number;
+  totalFeeStroops: number;
+  totalFeeXlm: string;
+  feeBumps: FeeBumpOption[];
+  networkFees: {
+    low: number;
+    medium: number;
+    high: number;
+  };
+  surgeMultiplier: number;
+}
+
+export type FeeBumpLevel = 'low' | 'medium' | 'high';
