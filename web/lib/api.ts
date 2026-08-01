@@ -1,5 +1,7 @@
 'use client';
 
+import type { AnalyzeResponse } from './sorobantypes';
+import { loadSettings, resolveEndpoint } from './userSettings';
 import React, { useCallback, useState } from 'react';
 import { useDropzone, FileRejection } from 'react-dropzone';
 import { parseWasmError } from '../lib/errorHandling';
@@ -9,6 +11,27 @@ import { arrayBufferToBase64 } from '../lib/utils';
 
 const MAX_WASM_SIZE = 10 * 1024 * 1024; // 10 MB limit
 
+/**
+ * Base URL for every backend call.
+ *
+ * A custom indexer URL saved on the /settings page takes precedence over the
+ * build-time `NEXT_PUBLIC_API_URL`, so power users can point the app at their
+ * own self-hosted backend without a rebuild. Resolved per request because the
+ * preference can change while the app is open.
+ */
+export function getApiBaseUrl(): string {
+  return resolveEndpoint(loadSettings().indexerUrl, API_URL);
+}
+
+export const apiConfig = {
+  baseUrl: API_URL,
+  environment: process.env.NODE_ENV ?? 'development',
+};
+
+export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
+  params?: Record<string, string | number | boolean | null | undefined>;
+  token?: string;
+  body?: BodyInit | object | null;
 /** Checks for the WebAssembly magic header (\0asm) */
 function hasWasmMagic(buffer: ArrayBuffer): boolean {
   if (buffer.byteLength < 4) return false;
@@ -25,6 +48,18 @@ interface DroppedFile {
   sizeBytes: number;
 }
 
+export function apiUrl(path: string, params?: ApiRequestOptions['params']): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const url = new URL(`${getApiBaseUrl()}${normalizedPath}`);
+
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        url.searchParams.set(key, String(value));
+      }
+    });
+
+  return url.toString();
 interface ErrorDetails {
   title: string;
   message: string;
@@ -457,6 +492,19 @@ export function UploadZone({
           </div>
         )}
 
+import { simulationQueueManager } from './requestQueue';
+
+export const analyzeService = {
+  analyze(req: AnalyzeRequest, token?: string): Promise<AnalyzeResponse> {
+    return simulationQueueManager.enqueue(() =>
+      apiClient.post<AnalyzeResponse>('/analyze', req, { token }),
+    );
+  },
+
+  analyzeWasm(req: AnalyzeWasmRequest, token?: string): Promise<AnalyzeResponse> {
+      apiClient.post<AnalyzeResponse>('/analyze/wasm', req, { token }),
+};
+
         {/* SUCCESS STATE */}
         {uploadState === 'success' && droppedFile && (
           <div className="flex flex-col items-center text-center gap-4">
@@ -472,14 +520,10 @@ export function UploadZone({
             <div className="flex items-center gap-3 bg-slate-800/80 border border-emerald-700/40 rounded-xl px-5 py-3">
               <div className="w-9 h-9 rounded-lg bg-emerald-900/50 border border-emerald-700 flex items-center justify-center flex-shrink-0">
                 <span className="text-emerald-400 text-xs font-bold font-mono">WA</span>
-              </div>
               <div className="text-left">
                 <p className="text-sm font-medium text-slate-200 truncate max-w-[220px]">
                   {droppedFile.name}
-                </p>
                 <p className="text-xs text-slate-500 font-mono">{formatBytes(droppedFile.sizeBytes)}</p>
-              </div>
-            </div>
 
             <button
               type="button"
@@ -489,48 +533,30 @@ export function UploadZone({
             >
               Upload a different file
             </button>
-          </div>
         )}
 
         {/* ERROR STATE */}
         {uploadState === 'error' && errorDetails && (
           <div className="flex flex-col items-center text-center gap-3 max-w-md">
             <WasmIcon state="error" />
-            <div>
               <p className="text-red-400 font-semibold text-base">
                 <ErrorIcon />
                 {errorDetails.title}
-              </p>
               <p className="text-xs text-red-300/80 mt-1 leading-relaxed">
                 {errorDetails.message}
-              </p>
               {errorDetails.details && (
                 <p className="text-xs text-slate-400 font-mono mt-1 bg-slate-950/60 p-2 rounded border border-slate-800/80 text-left overflow-x-auto max-w-full">
                   {errorDetails.details}
-                </p>
-              )}
               {errorDetails.suggestedAction && (
                 <p className="text-xs text-amber-300/70 mt-2 italic">
                   💡 {errorDetails.suggestedAction}
-                </p>
-              )}
-            </div>
 
-            <button
-              type="button"
               id="wasm-upload-try-again-btn"
-              onClick={handleReset}
               className="mt-2 px-5 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:bg-slate-700 hover:text-white transition-all"
-            >
               Try again
-            </button>
-          </div>
-        )}
-      </div>
 
       <p className="text-xs text-slate-600 text-center mt-3 font-mono">
         WASM Resource Analyzer · Soroscope · compiled Soroban contracts only
-      </p>
 
       {/* Global Style Animations */}
       <style jsx global>{`
@@ -541,12 +567,7 @@ export function UploadZone({
         @keyframes dot-pulse {
           0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
           40% { opacity: 1; transform: scale(1.2); }
-        }
         @keyframes pulse-ring {
           0%, 100% { opacity: 0.4; }
           50% { opacity: 1; }
-        }
       `}</style>
-    </div>
-  );
-}

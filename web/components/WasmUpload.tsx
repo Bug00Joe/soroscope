@@ -18,6 +18,9 @@ import { twMerge } from "tailwind-merge";
 import { ApiError, analyzeService } from "../lib/api";
 import { createUserFriendlyMessage, formatError } from "../lib/errorHandling";
 import { arrayBufferToBase64 } from "../lib/utils";
+import { useWasmValidationWorker } from "../hooks/useWasmValidationWorker";
+import { extractContractFunctions } from "../lib/wasmValidation";
+import type { WasmValidationReport } from "../lib/wasmValidation";
 
 // Utility for cleaner tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -29,11 +32,13 @@ function cn(...inputs: ClassValue[]) {
 interface WasmFile {
   file: File;
   id: string;
-  status: "pending" | "uploading" | "success" | "error";
+  status: "pending" | "validating" | "uploading" | "success" | "error";
   progress: number;
   error?: string;
   hash?: string;
   simulationResult?: unknown;
+  /** Structured decode report produced off the main thread. */
+  validation?: WasmValidationReport;
 }
 
 interface WasmUploadProps {
@@ -79,6 +84,7 @@ export default function WasmUpload({
 }: WasmUploadProps) {
   const [files, setFiles] = useState<WasmFile[]>([]);
   const [isDragActive, setIsDragActive] = useState(false);
+  const { validate } = useWasmValidationWorker();
 
   // Validate WASM file
   const validateWasm = useCallback(
@@ -102,6 +108,44 @@ export default function WasmUpload({
       prev.map((f) => (f.id === id ? { ...f, progress } : f))
     );
   }, []);
+
+  // Submit WASM to backend simulation engine.
+  const uploadFile = useCallback(async (wasmFile: WasmFile) => {
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === wasmFile.id ? { ...f, status: "uploading" } : f
+      )
+    );
+
+    try {
+      setUploadProgress(wasmFile.id, 10);
+      const buffer = await wasmFile.file.arrayBuffer();
+
+      // Decode/validate in the Web Worker first. The worker takes ownership of
+      // `buffer` (transferable), so base64 encoding uses its own copy.
+      const encodeBuffer = buffer.slice(0);
+        prev.map((f) => (f.id === wasmFile.id ? { ...f, status: "validating" } : f))
+      const validation = await validate(buffer, maxFileSize);
+      setUploadProgress(wasmFile.id, 40);
+
+      if (!validation.valid) {
+        throw new Error(
+          validation.errors[0] || "Validation Error: WASM module could not be decoded"
+      }
+
+          f.id === wasmFile.id ? { ...f, status: "uploading", validation } : f
+
+      const wasmBytesBase64 = arrayBufferToBase64(encodeBuffer);
+      setUploadProgress(wasmFile.id, 80);
+
+      const simulationResult = await analyzeService.analyzeWasm({
+        wasm_bytes: wasmBytesBase64,
+        function_name: "main",
+        args: [],
+      });
+
+      const hash = await generateHash(wasmFile.file);
+      setUploadProgress(wasmFile.id, 100);
 
   // Submit WASM to backend simulation engine
   const uploadFile = useCallback(
@@ -171,9 +215,21 @@ export default function WasmUpload({
           )
         );
       }
+
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === wasmFile.id
+            ? {
+                ...f,
+                status: "error",
+                error: errorMessage,
+              }
+            : f
+        )
+      );
+  }, [maxFileSize, setUploadProgress, validate]);
     },
     [setUploadProgress]
-  );
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -252,6 +308,9 @@ export default function WasmUpload({
     }
   };
 
+  const uploadingCount = files.filter(
+    (f) => f.status === "uploading" || f.status === "validating"
+  ).length;
   const uploadingCount = files.filter((f) => f.status === "uploading").length;
   const successCount = files.filter((f) => f.status === "success").length;
 
@@ -372,12 +431,12 @@ export default function WasmUpload({
                         ? "bg-emerald-100 text-emerald-600"
                         : wasmFile.status === "error"
                         ? "bg-red-100 text-red-600"
-                        : wasmFile.status === "uploading"
+                        : wasmFile.status === "uploading" || wasmFile.status === "validating"
                         ? "bg-indigo-100 text-indigo-600"
                         : "bg-slate-100 text-slate-500"
                     )}
                   >
-                    {wasmFile.status === "uploading" ? (
+                    {wasmFile.status === "uploading" || wasmFile.status === "validating" ? (
                       <Loader2 className="w-5 h-5 animate-spin" />
                     ) : wasmFile.status === "success" ? (
                       <CheckCircle2 className="w-5 h-5" />
@@ -399,6 +458,9 @@ export default function WasmUpload({
                       </span>
                     </div>
 
+                    {/* progress bar */}
+                    {(wasmFile.status === "uploading" ||
+                      wasmFile.status === "validating") && (
                     {/* Progress Bar */}
                     {wasmFile.status === "uploading" && (
                       <div className="mt-2">
@@ -411,7 +473,9 @@ export default function WasmUpload({
                           />
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
-                          Uploading... {wasmFile.progress}%
+                          {wasmFile.status === "validating"
+                            ? "Decoding WASM module..."
+                            : `Uploading... ${wasmFile.progress}%`}
                         </p>
                       </div>
                     )}
@@ -428,6 +492,16 @@ export default function WasmUpload({
                       </div>
                     )}
 
+                    {/* decode summary from the worker */}
+                    {wasmFile.status === "success" && wasmFile.validation && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        {wasmFile.validation.sections.length} sections &bull;{" "}
+                        {extractContractFunctions(wasmFile.validation).length} exported
+                        functions &bull; decoded in {wasmFile.validation.durationMs}ms
+                      </p>
+                    )}
+
+                    {/* error state */}
                     {/* Error State */}
                     {wasmFile.status === "error" && wasmFile.error && (
                       <div className="mt-1.5 flex items-center gap-2">

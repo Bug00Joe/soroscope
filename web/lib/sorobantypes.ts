@@ -181,6 +181,41 @@ export function generateMockResult(functionName: string, inputs: SimulationInput
   return results[functionName] ?? { success: true, message: 'Function executed' };
 }
 
+export type TransactionStatus = 'success' | 'failed' | 'pending';
+
+export interface TransactionRecord {
+  hash: string;
+  functionName: string;
+  status: TransactionStatus;
+  timestamp: number;
+  contractId: string;
+  fee?: string;
+}
+
+export function generateMockTransactionRecord(overrides?: Partial<TransactionRecord>): TransactionRecord {
+  return {
+    hash: overrides?.hash ?? 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b',
+    functionName: overrides?.functionName ?? 'transfer',
+    status: overrides?.status ?? 'success',
+    timestamp: overrides?.timestamp ?? Date.now(),
+    contractId: overrides?.contractId ?? 'CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q',
+    fee: overrides?.fee ?? '0.00123',
+  };
+}
+
+export function generateMockTransactions(count: number): TransactionRecord[] {
+  const statuses: TransactionStatus[] = ['success', 'failed', 'pending'];
+  const functions = ['transfer', 'swap', 'mint', 'burn', 'deposit', 'withdraw', 'approve'];
+  return Array.from({ length: count }, (_, i) => ({
+    hash: `tx${String(i).padStart(3, '0')}${'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b'.slice(5)}`,
+    functionName: functions[i % functions.length],
+    status: statuses[i % statuses.length],
+    timestamp: Date.now() - i * 60000,
+    contractId: 'CAEZJVJ4N7P7GRUVD5NG5LYYH23AQHJUKQEUHW54LR5PGQX3V7FXD7Q',
+    fee: (Math.random() * 0.01).toFixed(5),
+  }));
+}
+
 export function generateMockResourceCost(): ResourceCost {
   return {
     fee: (Math.random() * 0.05).toFixed(5),
