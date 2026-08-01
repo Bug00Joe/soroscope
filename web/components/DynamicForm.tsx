@@ -73,12 +73,12 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
   function inputStyle(hasError: boolean): React.CSSProperties {
     return {
       padding: '8px 12px',
-      border: `1px solid ${hasError ? '#f85149' : '#30363d'}`,
+      border: `1px solid ${hasError ? '#f85149' : 'var(--border-default)'}`,
       borderRadius: '6px',
       fontSize: '14px',
       boxSizing: 'border-box',
-      backgroundColor: '#0d1117',
-      color: '#c9d1d9',
+      backgroundColor: 'var(--bg-input)',
+      color: 'var(--text-primary)',
     };
   }
 
@@ -133,16 +133,6 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
                 required={!input.optional}
                 disabled={loading}
                 style={{ ...inputStyle(hasError), fontFamily: 'monospace' }}
-                style={{
-                  padding: '8px 12px',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontFamily: 'monospace',
-                  boxSizing: 'border-box',
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                }}
               />
             ) : input.type === 'u32' || input.type === 'u128' || input.type === 'i128' ? (
               <input
@@ -153,15 +143,6 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
-                style={{
-                  padding: '8px 12px',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                }}
               />
             ) : input.type === 'string' || input.type === 'symbol' ? (
               <input
@@ -172,15 +153,6 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
-                style={{
-                  padding: '8px 12px',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                }}
               />
             ) : input.type === 'bool' ? (
               <select
@@ -189,15 +161,6 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
-                style={{
-                  padding: '8px 12px',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                }}
               >
                 <option value="">Select value</option>
                 <option value="true">True</option>
@@ -212,15 +175,6 @@ export function DynamicForm({ func, onSubmit, onInputChange, liveSimulate = fals
                 required={!input.optional}
                 disabled={loading}
                 style={inputStyle(hasError)}
-                style={{
-                  padding: '8px 12px',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  backgroundColor: 'var(--bg-input)',
-                  color: 'var(--text-primary)',
-                }}
               />
             )}
             {hasError && (

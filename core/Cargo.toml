@@ -3,6 +3,10 @@ name = "soroscope-core"
 version = "0.1.0"
 edition = "2021"
 
+# The root workspace only lists the contract crates as members, so opt out
+# explicitly — without this, cargo refuses to build the package at all.
+[workspace]
+
 [lib]
 name = "soroscope_core"
 path = "src/lib.rs"
@@ -21,15 +25,20 @@ rusqlite = { version = "0.29", features = ["bundled"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
+hmac = "0.12"
 thiserror = "1.0"
 dotenvy = "0.15"
 config = "0.14"
 axum = { version = "0.7", features = ["multipart", "ws"] }
 tempfile = "3"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.27"
+opentelemetry_sdk = "0.27"
+tracing-opentelemetry = "0.28"
 prometheus = "0.14"
 tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "request-id", "set-header"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "compression-full"] }
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7", features = ["axum", "vendored"] }
@@ -50,6 +59,11 @@ rsa = "0.9"
 wasm-encoder = { version = "0.240", features = ["wasmparser"] }
 wasmparser = "0.240"
 rayon = "1.8"
+# Used by the host resource alarm monitor (issue #592) to sample CPU
+# and RAM utilisation for the local process. Default features include
+# everything we need: `system`, `process`, and the CPU usage diff.
+sysinfo = "0.32"
 
 [dev-dependencies]
 proptest = "1.4.0"
+tower = { version = "0.4", features = ["util"] }
