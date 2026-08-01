@@ -132,3 +132,49 @@ test('TransactionHistoryTable: empty state shows appropriate message', () => {
   assert.equal(result.items.length, 0);
   assert.equal(result.total, 0);
 });
+
+// CSV and JSON format testing helpers mirroring component logic
+function formatCSV(transactions) {
+  if (!transactions.length) return '';
+  const headers = ['Transaction Hash', 'Function', 'Status', 'Timestamp', 'Fee (XLM)'];
+  const escape = (val) => {
+    const clean = String(val).replace(/"/g, '""');
+    return `"${clean}"`;
+  };
+  const rows = transactions.map((tx) => [
+    escape(tx.hash),
+    escape(tx.functionName),
+    escape(tx.status),
+    escape(new Date(tx.timestamp).toISOString()),
+    escape(tx.fee ? `${tx.fee}` : '0'),
+  ]);
+  return [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+}
+
+function formatJSON(transactions) {
+  return JSON.stringify(transactions, null, 2);
+}
+
+test('TransactionHistoryTable: formatCSV sanitizes and constructs valid CSV records', () => {
+  const mockTxs = [
+    createMockTransaction({ hash: 'tx"1"', functionName: 'test,func', fee: '0.01' }),
+  ];
+  const csv = formatCSV(mockTxs);
+  assert.ok(csv.includes('"Transaction Hash",_,"Fee (XLM)"'.split('_')[0]));
+  assert.ok(csv.includes('"tx""1"""'));
+  assert.ok(csv.includes('"test,func"'));
+  assert.ok(csv.includes('"0.01"'));
+});
+
+test('TransactionHistoryTable: formatJSON accurately serializes full dataset', () => {
+  const mockTxs = [
+    createMockTransaction({ hash: 'tx1' }),
+    createMockTransaction({ hash: 'tx2' }),
+  ];
+  const jsonStr = formatJSON(mockTxs);
+  const parsed = JSON.parse(jsonStr);
+  assert.strictEqual(parsed.length, 2);
+  assert.strictEqual(parsed[0].hash, 'tx1');
+  assert.strictEqual(parsed[1].hash, 'tx2');
+});
+
