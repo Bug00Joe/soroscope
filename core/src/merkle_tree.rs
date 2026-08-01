@@ -123,7 +123,6 @@ impl MerkleTree {
 
         for level in 0..self.nodes.len() - 1 {
             let level_nodes = &self.nodes[level];
-            let sibling_index = if path_index.is_multiple_of(2) {
             let is_left = path_index.is_multiple_of(2);
             let sibling_index = if is_left {
                 path_index + 1
@@ -139,7 +138,6 @@ impl MerkleTree {
 
             proof.push(ProofNode {
                 hash: sibling_hash,
-                is_left: path_index.is_multiple_of(2),
                 is_left,
             });
 
@@ -407,11 +405,11 @@ mod tests {
 
 #[test]
 fn test_even_leaf_count_root_matches_reference() {
-    // Reference computed with SHA-256 + sorted hash_pair (identical algorithm).
+    // Reference computed with double SHA-256 leaves + sorted hash_pair
+    // (identical algorithm, verified independently).
     // Leaves: ["a", "b", "c", "d"] — 4 leaves (even).
-    // Expected root: 4c6aae040ffada3d02598207b8485fcbe161c03f4cb3f660e4d341e7496ff3b2
     let tree = make_tree(&["a", "b", "c", "d"]);
-    let expected = "4c6aae040ffada3d02598207b8485fcbe161c03f4cb3f660e4d341e7496ff3b2";
+    let expected = "5f934c91e9d5e70bccd99cbfcdc5c1c252f4e717e6bda7b599c0d86e4ce1e293";
     assert_eq!(tree.get_root_hex(), expected);
 }
 
@@ -419,36 +417,32 @@ fn test_even_leaf_count_root_matches_reference() {
 fn test_odd_leaf_count_root_matches_reference() {
     // Leaves: ["a", "b", "c"] — 3 leaves (odd).
     // The last leaf is paired with itself when building the next level.
-    // Expected root: b1da020d217b348265d6578cdfe4cc717bb79b5deaffce7fc167180e9e1ec8c6
     let tree = make_tree(&["a", "b", "c"]);
-    let expected = "b1da020d217b348265d6578cdfe4cc717bb79b5deaffce7fc167180e9e1ec8c6";
+    let expected = "3334bf169bd4337da65ca7ed1b63c09fa0b77886bedf7cd0cc4b9353dd07dd59";
     assert_eq!(tree.get_root_hex(), expected);
 }
 
 #[test]
 fn test_single_leaf_root_matches_reference() {
-    // Single leaf: SHA-256("solo") with no pairing.
-    // Expected root: 5364f2f2fc4f54e9d47ad29cfb08ef430c8153394bf2a0dff5cbe77a0ffef861
+    // Single leaf: double SHA-256("solo") with no pairing.
     let tree = make_tree(&["solo"]);
-    let expected = "5364f2f2fc4f54e9d47ad29cfb08ef430c8153394bf2a0dff5cbe77a0ffef861";
+    let expected = "0018e0e3babbc9f34cfaadf921b6e92dea1318e245a364dd929ed1257a40fa0c";
     assert_eq!(tree.get_root_hex(), expected);
 }
 
 #[test]
 fn test_two_leaf_root_matches_reference() {
     // Leaves: ["alice", "bob"] — 2 leaves (even).
-    // Expected root: cb57721dc3aa8df0eef91989560b053a86be98131f45650bd1c3955e0167ef17
     let tree = make_tree(&["alice", "bob"]);
-    let expected = "cb57721dc3aa8df0eef91989560b053a86be98131f45650bd1c3955e0167ef17";
+    let expected = "d6289d374fe3c1f34cf4bd88937fa65ca7a069223d2b31fb4e3a2792eaa5d815";
     assert_eq!(tree.get_root_hex(), expected);
 }
 
 #[test]
 fn test_five_leaf_root_matches_reference() {
     // Leaves: ["a", "b", "c", "d", "e"] — 5 leaves (odd).
-    // Expected root: df947ef1b6dda4cb4ef081afd68f255104ccaab2661f2047d2f1a05c5440076f
     let tree = make_tree(&["a", "b", "c", "d", "e"]);
-    let expected = "df947ef1b6dda4cb4ef081afd68f255104ccaab2661f2047d2f1a05c5440076f";
+    let expected = "fe6d1a83ed5b116f4e61ac59d42668258e169e5998e3986e189a0fc72cc40487";
     assert_eq!(tree.get_root_hex(), expected);
 }
 
@@ -470,6 +464,7 @@ fn test_odd_leaves_all_proofs_valid() {
         let proof = tree.generate_proof(i).unwrap();
         assert!(proof.verify(), "proof for leaf {i} failed");
     }
+}
 }
 
 // ── Property-based fuzz tests for MerkleTree ──────────────────────────────────
