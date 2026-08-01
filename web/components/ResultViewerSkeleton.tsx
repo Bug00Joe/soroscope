@@ -18,7 +18,7 @@ export function ResultViewerSkeleton() {
     <div
       style={{
         padding: '24px',
-        backgroundColor: '#0d1117',
+        backgroundColor: 'var(--bg-elevated)',
         borderRadius: '8px',
         borderLeft: '4px solid #00d9ff',
         border: '1px solid #30363d',
@@ -42,7 +42,7 @@ export function ResultViewerSkeleton() {
             >
               Simulating Transaction...
             </h3>
-            <p style={{ margin: '0', color: '#8b949e', fontSize: '12px' }}>
+            <p style={{ margin: '0', color: 'var(--text-secondary)', fontSize: '12px' }}>
               Profiling smart contract resource cost
             </p>
           </div>
@@ -54,7 +54,7 @@ export function ResultViewerSkeleton() {
       {/* Code Result Skeleton Box */}
       <div
         style={{
-          backgroundColor: '#0d1117',
+          backgroundColor: 'var(--bg-elevated)',
           padding: '16px',
           borderRadius: '6px',
           marginBottom: '16px',
@@ -62,21 +62,21 @@ export function ResultViewerSkeleton() {
         }}
       >
         <div className="flex flex-col gap-3">
-          <div className="h-4 w-24 bg-[#30363d] rounded" />
-          <div className="h-3 w-full bg-[#161b22] rounded" />
-          <div className="h-3 w-5/6 bg-[#161b22] rounded" />
-          <div className="h-3 w-4/5 bg-[#161b22] rounded" />
-          <div className="h-3 w-2/3 bg-[#161b22] rounded" />
+          <div className="h-4 w-24 bg-[var(--skeleton)] rounded" />
+          <div className="h-3 w-full bg-[var(--bg-card)] rounded" />
+          <div className="h-3 w-5/6 bg-[var(--bg-card)] rounded" />
+          <div className="h-3 w-4/5 bg-[var(--bg-card)] rounded" />
+          <div className="h-3 w-2/3 bg-[var(--bg-card)] rounded" />
         </div>
       </div>
 
       {/* Call Graph Skeleton Box */}
       <div
         style={{
-          backgroundColor: '#161b22',
+          backgroundColor: 'var(--bg-card)',
           padding: '20px',
           borderRadius: '8px',
-          border: '1px solid #30363d',
+          border: '1px solid var(--border-default)',
           minHeight: '120px',
           display: 'flex',
           flexDirection: 'column',
@@ -85,16 +85,16 @@ export function ResultViewerSkeleton() {
           gap: '12px',
         }}
       >
-        <div className="h-4 w-32 bg-[#30363d] rounded mb-2" />
+        <div className="h-4 w-32 bg-[var(--skeleton)] rounded mb-2" />
         <div className="flex items-center gap-4">
-          <div className="h-10 w-24 bg-[#0d1117] rounded-lg border border-[#30363d] flex items-center justify-center">
-            <div className="h-2 w-12 bg-[#30363d] rounded" />
+          <div className="h-10 w-24 bg-[var(--bg-elevated)] rounded-lg border border-[var(--border-default)] flex items-center justify-center">
+            <div className="h-2 w-12 bg-[var(--skeleton)] rounded" />
           </div>
-          <div className="h-[2px] w-8 bg-[#30363d] relative">
+          <div className="h-[2px] w-8 bg-[var(--skeleton)] relative">
             <div className="absolute right-0 top-1/2 -translate-y-1/2 border-t-[4px] border-b-[4px] border-l-[6px] border-transparent border-l-[#30363d]" />
           </div>
-          <div className="h-10 w-24 bg-[#0d1117] rounded-lg border border-[#30363d] flex items-center justify-center">
-            <div className="h-2 w-12 bg-[#30363d] rounded" />
+          <div className="h-10 w-24 bg-[var(--bg-elevated)] rounded-lg border border-[var(--border-default)] flex items-center justify-center">
+            <div className="h-2 w-12 bg-[var(--skeleton)] rounded" />
           </div>
         </div>
       </div>
@@ -102,20 +102,20 @@ export function ResultViewerSkeleton() {
       {/* Heatmap Matrix Skeleton */}
       <div
         style={{
-          backgroundColor: '#161b22',
+          backgroundColor: 'var(--bg-card)',
           padding: '20px',
           borderRadius: '8px',
-          border: '1px solid #30363d',
+          border: '1px solid var(--border-default)',
           marginTop: '16px',
         }}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="h-4 w-44 bg-[#30363d] rounded" />
-          <div className="h-7 w-32 bg-[#0d1117] rounded-md border border-[#30363d]" />
+          <div className="h-4 w-44 bg-[var(--skeleton)] rounded" />
+          <div className="h-7 w-32 bg-[var(--bg-elevated)] rounded-md border border-[var(--border-default)]" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6">
-          <div className="grid grid-cols-6 gap-2 bg-[#0d1117] p-3 rounded-lg border border-[#30363d] w-fit">
+          <div className="grid grid-cols-6 gap-2 bg-[var(--bg-elevated)] p-3 rounded-lg border border-[var(--border-default)] w-fit">
             {heatmapCells.map((cell) => (
               <div
                 key={cell.id}
@@ -124,8 +124,8 @@ export function ResultViewerSkeleton() {
             ))}
           </div>
 
-          <div className="bg-[#0d1117] rounded-lg border border-[#30363d] p-4 min-h-[170px]">
-            <div className="h-3 w-48 bg-[#30363d] rounded mb-4" />
+          <div className="bg-[var(--bg-elevated)] rounded-lg border border-[var(--border-default)] p-4 min-h-[170px]">
+            <div className="h-3 w-48 bg-[var(--skeleton)] rounded mb-4" />
             <div className="h-5 w-36 bg-[#1f2937] rounded mb-3" />
             <div className="h-3 w-full bg-[#1f2937] rounded mb-2" />
             <div className="h-3 w-11/12 bg-[#1f2937] rounded mb-2" />
@@ -134,10 +134,10 @@ export function ResultViewerSkeleton() {
         </div>
 
         <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="h-14 rounded-lg bg-[#0d1117] border border-[#30363d]" />
-          <div className="h-14 rounded-lg bg-[#0d1117] border border-[#30363d]" />
-          <div className="h-14 rounded-lg bg-[#0d1117] border border-[#30363d]" />
-          <div className="h-14 rounded-lg bg-[#0d1117] border border-[#30363d]" />
+          <div className="h-14 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)]" />
+          <div className="h-14 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)]" />
+          <div className="h-14 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)]" />
+          <div className="h-14 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)]" />
         </div>
       </div>
     </div>
