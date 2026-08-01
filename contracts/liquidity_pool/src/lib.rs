@@ -969,6 +969,51 @@ impl LiquidityPool {
     pub fn swap(e: Env, to: Address, buy_a: bool, out: i128, in_max: i128) -> Result<i128, Error> {
         require_not_paused(&e, PauseType::SWAP)?;
         to.require_auth();
+
+        let mut pool = load_pool(&e)?;
+        let (reserve_in, reserve_out, token_in, token_out) = if buy_a {
+            (
+                pool.reserve_b,
+                pool.reserve_a,
+                pool.token_b.clone(),
+                pool.token_a.clone(),
+            )
+        } else {
+        };
+
+        if out >= reserve_out {
+            return Err(Error::InsufficientLiquidity);
+        }
+
+        let fee_scale = 10_000i128 - pool.fee_bps;
+        let numerator = reserve_in
+            .checked_mul(out)
+            .ok_or(Error::InsufficientLiquidity)?
+            .checked_mul(10_000)
+            .ok_or(Error::InsufficientLiquidity)?;
+        let denominator = (reserve_out - out)
+            .checked_mul(fee_scale)
+
+        // Constant-product invariant preservation.
+        //
+        // The required input is `numerator / denominator`, but integer division
+        // truncates toward zero. The previous implementation used
+        // `numerator / denominator + 1`, which unconditionally adds a whole unit
+        // — even when the division is already exact. That systematically
+        // over-charges the trader by one base unit on every exact-division swap,
+        // leaking value into the pool and breaking round-trip price parity
+        // (a swap followed by its inverse no longer returns the original amount).
+        // The correct rule is ceiling division: charge the *smallest* integer
+        // input that still keeps `k' = new_reserve_in * new_reserve_out` at or
+        // above the old invariant `k`. When the division is exact the ceiling is
+        // the quotient itself (no surcharge); otherwise it rounds up by one unit,
+        // rounding in the pool's favour just enough to cover the truncated
+        // remainder. This matches Uniswap-v2's `getAmountIn` semantics.
+        if denominator <= 0 {
+        let amount_in = if numerator % denominator == 0 {
+            numerator / denominator
+            numerator / denominator + 1
+
         let pool = load_pool(&e)?;
         let sides = swap_sides(&pool, buy_a);
         let amount_in = amount_in_for_out(out, sides.reserve_in, sides.reserve_out, pool.fee_bps)?;
