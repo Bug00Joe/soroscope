@@ -1,7 +1,11 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::{symbol_short, Bytes, Env, Vec, Symbol};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{storage::Persistent as _, Ledger as _, LedgerInfo},
+    Bytes, Env, Symbol, Vec,
+};
 use std::println;
 
 
@@ -27,6 +31,52 @@ fn test_storage() {
     assert_eq!(client.read_temporary(&key), data_bytes);
 }
 
+#[test]
+fn test_extend_ttl_for_persistent_entry() {
+    let env = Env::default();
+    env.ledger().set(LedgerInfo {
+        timestamp: 0,
+        protocol_version: 22,
+        sequence_number: 1,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 10_000,
+    });
+
+    let contract_id = env.register(StorageHeavyContract, ());
+    let client = StorageHeavyContractClient::new(&env, &contract_id);
+    let key = symbol_short!("data");
+    let data = Bytes::from_slice(&env, &[1, 2, 3]);
+
+    client.write_persistent(&key, &data);
+    let initial_ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+    let extended_ttl = initial_ttl + 1_000;
+
+    client.extend_ttl(&key, &(initial_ttl + 1), &extended_ttl);
+
+    let ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl, extended_ttl);
+    assert_eq!(client.read_persistent(&key), data);
+}
+
+#[test]
+fn test_extend_ttl_respects_threshold() {
+    let env = Env::default();
+    let contract_id = env.register(StorageHeavyContract, ());
+    let client = StorageHeavyContractClient::new(&env, &contract_id);
+    let key = symbol_short!("data");
+    let data = Bytes::from_slice(&env, &[1, 2, 3]);
+
+    client.write_persistent(&key, &data);
+    let initial_ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+
+    client.extend_ttl(&key, &(initial_ttl - 1), &(initial_ttl + 1_000));
+
+    let ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl, initial_ttl);
+}
 #[test]
 fn test_batch_storage() {
     let env = Env::default();
