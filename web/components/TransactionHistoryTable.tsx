@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import clsx from 'clsx';
+import { ExternalLink, Loader2, Download } from 'lucide-react';
 import { ExternalLink, Loader2, Search } from 'lucide-react';
 import type { TransactionRecord, TransactionStatus } from '../lib/sorobantypes';
 import { paginate } from '../lib/paginationUtils';
@@ -155,6 +156,36 @@ export function TransactionHistoryTable({
   const explorerUrl =
     process.env.NEXT_PUBLIC_STELLAR_EXPLORER_URL ?? 'https://stellar.expert/explorer/testnet';
 
+  const exportToCSV = useCallback(() => {
+    if (!transactions.length) return;
+    const headers = ['Transaction Hash', 'Function', 'Status', 'Timestamp', 'Fee (XLM)'];
+    const escape = (val: string) => {
+      const clean = val.replace(/"/g, '""');
+      return `"${clean}"`;
+    };
+    const rows = transactions.map((tx) => [
+      escape(tx.hash),
+      escape(tx.functionName),
+      escape(tx.status),
+      escape(new Date(tx.timestamp).toISOString()),
+      escape(tx.fee ? `${tx.fee}` : '0'),
+    ]);
+    const csvContent = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `telemetry_events_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [transactions]);
+
+  const exportToJSON = useCallback(() => {
+    const jsonContent = JSON.stringify(transactions, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+    link.setAttribute('download', `telemetry_events_${Date.now()}.json`);
   const hasActiveFilter = filter.status !== 'all' || filter.functionName.trim().length > 0;
 
   const filterControls = (onStatusFilterChange || onFunctionFilterChange) && (
@@ -181,7 +212,6 @@ export function TransactionHistoryTable({
         <option value="failed">Failed</option>
         <option value="pending">Pending</option>
       </select>
-    </div>
   );
 
   if (!loading && transactions.length === 0) {
@@ -201,7 +231,26 @@ export function TransactionHistoryTable({
             Recent contract invocations and telemetry logs.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={exportToCSV}
+            title="Export telemetry events as CSV"
+            className="flex items-center gap-1.5 rounded border border-[#30363d] bg-[#161b22] px-2.5 py-1 text-xs font-semibold text-[#c9d1d9] hover:border-[#8b949e] hover:text-[#f0f6fc] transition"
+          >
+            <Download size={13} />
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={exportToJSON}
+            title="Export telemetry events as JSON"
+            className="flex items-center gap-1.5 rounded border border-[#30363d] bg-[#161b22] px-2.5 py-1 text-xs font-semibold text-[#c9d1d9] hover:border-[#8b949e] hover:text-[#f0f6fc] transition"
+          >
+            <Download size={13} />
+            Export JSON
+          </button>
+          <div className="h-4 w-[1px] bg-[#30363d] hidden sm:block" />
           <button
             type="button"
             onClick={() => setIsInfiniteMode((prev) => !prev)}
