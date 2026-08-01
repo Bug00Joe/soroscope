@@ -1039,6 +1039,7 @@ pub struct SimulationEngine {
     contract_cache: Option<Arc<crate::cache::ContractCache>>,
     mode: SimulationMode,
     local_runner: Option<Arc<crate::runner::LocalRunner>>,
+    rpc_throttle: crate::rpc_throttle::RpcThrottle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1081,6 +1082,7 @@ impl SimulationEngine {
             contract_cache: None,
             mode: SimulationMode::Failover,
             local_runner: None,
+            rpc_throttle: Default::default(),
         }
     }
 
@@ -1099,6 +1101,7 @@ impl SimulationEngine {
             contract_cache: None,
             mode,
             local_runner: None,
+            rpc_throttle: Default::default(),
         }
     }
 
@@ -1115,6 +1118,7 @@ impl SimulationEngine {
             contract_cache: Some(cache),
             mode: SimulationMode::Failover,
             local_runner: None,
+            rpc_throttle: Default::default(),
         }
     }
 
@@ -1140,6 +1144,7 @@ impl SimulationEngine {
             contract_cache: None,
             mode,
             local_runner: None,
+            rpc_throttle: Default::default(),
         }
     }
 
@@ -1225,9 +1230,10 @@ impl SimulationEngine {
         if let (Some(header), Some(value)) = (auth_header.as_deref(), auth_value.as_deref()) {
             req_builder = req_builder.header(header, value);
         }
-        let response: GetLedgerEntriesResponse = req_builder
-            .send()
-            .await?
+        self.rpc_throttle.wait().await;
+        let response = req_builder.send().await?;
+        self.rpc_throttle.observe(response.headers()).await;
+        let response: GetLedgerEntriesResponse = response
             .json()
             .await
             .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
@@ -1290,12 +1296,10 @@ impl SimulationEngine {
             },
         };
 
-        let response2: GetLedgerEntriesResponse = self
-            .client
-            .post(&url)
-            .json(&req2)
-            .send()
-            .await?
+        self.rpc_throttle.wait().await;
+        let response2 = self.client.post(&url).json(&req2).send().await?;
+        self.rpc_throttle.observe(response2.headers()).await;
+        let response2: GetLedgerEntriesResponse = response2
             .json()
             .await
             .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
@@ -1803,7 +1807,9 @@ impl SimulationEngine {
         // 2. Build transaction XDR
         let invoke_op = InvokeHostFunctionOp {
             host_function,
-            auth: vec![].try_into().unwrap(),
+            auth: vec![]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Too many auth entries".to_string()))?,
         };
 
         let operation = Operation {
@@ -1819,7 +1825,9 @@ impl SimulationEngine {
             seq_num: SequenceNumber(0),
             cond: Preconditions::None,
             memo: Memo::None,
-            operations: vec![operation].try_into().unwrap(),
+            operations: vec![operation]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to create operations".to_string()))?,
             ext: TransactionExt::V1(soroban_data),
         };
 
@@ -2180,6 +2188,7 @@ impl SimulationEngine {
             req_builder = req_builder.header(header, value);
         }
 
+        self.rpc_throttle.wait().await;
         let response = tokio::time::timeout(self.request_timeout, req_builder.send())
             .await
             .map_err(|_| SimulationError::NodeTimeout)?
@@ -2192,6 +2201,7 @@ impl SimulationEngine {
                     SimulationError::RpcRequestFailed(format!("Network error: {}", e))
                 }
             })?;
+        self.rpc_throttle.observe(response.headers()).await;
 
         if !response.status().is_success() {
             return Err(SimulationError::RpcRequestFailed(format!(
@@ -2439,10 +2449,12 @@ impl SimulationEngine {
             req_builder = req_builder.header(header, value);
         }
 
+        self.rpc_throttle.wait().await;
         let response = tokio::time::timeout(self.request_timeout, req_builder.send())
             .await
             .map_err(|_| SimulationError::NodeTimeout)?
             .map_err(|e| SimulationError::RpcRequestFailed(format!("Network error: {}", e)))?;
+        self.rpc_throttle.observe(response.headers()).await;
 
         if !response.status().is_success() {
             return Err(SimulationError::RpcRequestFailed(format!(
@@ -2999,7 +3011,11 @@ impl SimulationEngine {
             .map_err(|e| SimulationError::XdrError(format!("Encode invocation: {e}")))?;
         let nonce_input = [&public_key[..], &invocation_xdr[..]].concat();
         let nonce_hash = Sha256::digest(&nonce_input);
-        let nonce = i64::from_be_bytes(nonce_hash[..8].try_into().unwrap());
+        let nonce = i64::from_be_bytes(
+            nonce_hash[..8]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to derive nonce from hash".to_string()))?,
+        );
 
         // 3. Compute the network id
         let network_id: [u8; 32] = Sha256::digest(network_passphrase.as_bytes()).into();
@@ -3160,6 +3176,7 @@ pub fn profile_contract_with_flamegraph(
     function_name: String,
     args: Vec<String>,
 ) -> Result<(SorobanResources, ProfileResult), SimulationError> {
+    use soroban_sdk::testutils::Ledger;
     use soroban_sdk::{Env, Symbol, Val};
     use std::time::Instant;
 
@@ -4399,6 +4416,7 @@ mod tests {
     }
     #[test]
     fn test_debug_soroban_wasm_counter() {
+        use soroban_sdk::testutils::Ledger;
         use soroban_sdk::{Env, Symbol, Val};
         let wasm = soroban_wasm();
         let instr = WasmInstrumenter::new(&wasm).expect("parse ok");
