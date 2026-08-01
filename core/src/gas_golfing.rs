@@ -55,7 +55,7 @@ impl GasGolfingAnalyzer {
             contract_name: contract_name.to_string(),
             analysis_timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
             total_suggestions: suggestions.len(),
             suggestions,

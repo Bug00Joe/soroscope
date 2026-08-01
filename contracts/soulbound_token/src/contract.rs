@@ -79,6 +79,21 @@ impl SoulboundTokenTrait for SoulboundToken {
         receive_balance(&e, to, 1);
     }
 
+    fn revoke(e: Env, from: Address) {
+        let admin = read_administrator(&e);
+        admin.require_auth();
+        e.storage().instance().extend_ttl(100, 100);
+
+        // Check if the user has a token
+        let balance = read_balance(&e, from.clone());
+        if balance == 0 {
+            panic!("no token to revoke");
+        }
+
+        // Revoke (burn) the token
+        spend_balance(&e, from, 1);
+    }
+
     fn decimals(e: Env) -> u32 {
         read_decimal(&e)
     }

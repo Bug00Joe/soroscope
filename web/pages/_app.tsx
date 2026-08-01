@@ -12,6 +12,7 @@ export default function App({ Component, pageProps }: AppProps) {
       <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
         <NetworkProvider>
           <WalletProvider>
+            <OfflineBanner />
             <Component {...pageProps} />
             {/* Mounted app-wide so Cmd+K / Ctrl+K works on every page. */}
             <GlobalSearchModal />

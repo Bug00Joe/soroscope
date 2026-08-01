@@ -5,14 +5,15 @@
 //! signs each request, and retries transient failures with bounded exponential
 //! backoff.
 
+use crate::contract_registry::{verify_bytecode, ContractBytecodeSource, ContractRegister};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
+use reqwest::{Client, StatusCode};
 use tokio::{
     sync::{mpsc, RwLock},
     task::JoinHandle,
@@ -31,7 +32,7 @@ pub struct ContractSubscription {
     pub contract_id: String,
     /// Empty means every event emitted by the contract.
     pub event_types: Vec<String>,
-    pub callback_url: Url,
+    pub callback_url: String,
     /// Kept server-side and never serialized into delivery payloads.
     #[serde(skip_serializing)]
     pub signing_secret: String,
@@ -42,17 +43,18 @@ impl ContractSubscription {
     pub fn new(
         contract_id: impl Into<String>,
         event_types: Vec<String>,
-        callback_url: Url,
+        callback_url: impl Into<String>,
         signing_secret: impl Into<String>,
     ) -> Result<Self, WebhookError> {
         let contract_id = contract_id.into();
+        let callback_url = callback_url.into();
         let signing_secret = signing_secret.into();
         if contract_id.trim().is_empty() {
             return Err(WebhookError::InvalidSubscription(
                 "contract_id cannot be empty".into(),
             ));
         }
-        if !matches!(callback_url.scheme(), "http" | "https") {
+        if !(callback_url.starts_with("http://") || callback_url.starts_with("https://")) {
             return Err(WebhookError::InvalidSubscription(
                 "callback_url must use http or https".into(),
             ));
@@ -168,6 +170,8 @@ pub enum WebhookError {
     Serialization(#[from] serde_json::Error),
     #[error("webhook delivery failed after {attempts} attempts: {reason}")]
     DeliveryFailed { attempts: u32, reason: String },
+    #[error("event rejected by contract bytecode verification: {0}")]
+    BytecodeUnverified(String),
 }
 
 #[derive(Clone)]
@@ -181,6 +185,34 @@ impl WebhookSender {
             .send(event)
             .await
             .map_err(|_| WebhookError::QueueClosed)
+    }
+}
+
+/// Entry point for the event ingestion pipeline: verifies a contract event's
+/// live WASM bytecode hash against the whitelisted [`ContractRegister`]
+/// before allowing it into the dispatch queue, so a proxy contract spoofing
+/// a verified `contract_id` cannot have its events indexed.
+#[derive(Clone)]
+pub struct EventIngestor<S: ContractBytecodeSource + Clone> {
+    registry: ContractRegister,
+    source: S,
+    sender: WebhookSender,
+}
+
+impl<S: ContractBytecodeSource + Clone> EventIngestor<S> {
+    pub fn new(registry: ContractRegister, source: S, sender: WebhookSender) -> Self {
+        Self {
+            registry,
+            source,
+            sender,
+        }
+    }
+
+    pub async fn ingest(&self, event: ContractEvent) -> Result<(), WebhookError> {
+        verify_bytecode(&self.source, &self.registry, &event.contract_id)
+            .await
+            .map_err(|e| WebhookError::BytecodeUnverified(e.to_string()))?;
+        self.sender.enqueue(event).await
     }
 }
 
@@ -323,6 +355,63 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FakeBytecodeSource {
+        wasm_by_contract: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    impl ContractBytecodeSource for FakeBytecodeSource {
+        async fn fetch_wasm(&self, contract_id: &str) -> Result<Vec<u8>, String> {
+            self.wasm_by_contract
+                .get(contract_id)
+                .cloned()
+                .ok_or_else(|| format!("no wasm registered for {contract_id}"))
+        }
+    }
+
+    fn hash_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[tokio::test]
+    async fn ingestor_enqueues_events_whose_bytecode_matches_the_whitelist() {
+        let wasm = b"verified-wasm".to_vec();
+        let source = FakeBytecodeSource {
+            wasm_by_contract: std::collections::HashMap::from([("CABC".to_string(), wasm.clone())]),
+        };
+        let registry = ContractRegister::new(std::collections::HashMap::from([(
+            "CABC".to_string(),
+            hash_hex(&wasm),
+        )]));
+        let (tx, mut rx) = mpsc::channel(1);
+        let ingestor = EventIngestor::new(registry, source, WebhookSender { tx });
+
+        ingestor.ingest(event("transfer")).await.unwrap();
+        assert!(rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn ingestor_rejects_events_from_an_unwhitelisted_or_spoofed_contract() {
+        let source = FakeBytecodeSource {
+            wasm_by_contract: std::collections::HashMap::from([(
+                "CABC".to_string(),
+                b"proxy-wasm".to_vec(),
+            )]),
+        };
+        let registry = ContractRegister::new(std::collections::HashMap::from([(
+            "CABC".to_string(),
+            hash_hex(b"real-wasm"),
+        )]));
+        let (tx, mut rx) = mpsc::channel(1);
+        let ingestor = EventIngestor::new(registry, source, WebhookSender { tx });
+
+        let err = ingestor.ingest(event("transfer")).await.unwrap_err();
+        assert!(matches!(err, WebhookError::BytecodeUnverified(_)));
+        rx.close();
+        assert!(rx.recv().await.is_none());
+    }
+
     #[test]
     fn signature_round_trip_detects_tampering() {
         let secret = "a-secret-that-is-at-least-thirty-two-bytes";
@@ -340,14 +429,14 @@ mod tests {
         let transfer = ContractSubscription::new(
             "CABC",
             vec!["transfer".into()],
-            Url::parse("https://example.com/events").unwrap(),
+            "https://example.com/events",
             "a-secret-that-is-at-least-thirty-two-bytes",
         )
         .unwrap();
         let mut inactive = ContractSubscription::new(
             "CABC",
             Vec::new(),
-            Url::parse("https://example.com/all").unwrap(),
+            "https://example.com/all",
             "another-secret-that-is-at-least-32-bytes",
         )
         .unwrap();
@@ -377,7 +466,7 @@ mod tests {
         let result = ContractSubscription::new(
             "",
             Vec::new(),
-            Url::parse("https://example.com").unwrap(),
+            "https://example.com",
             "short",
         );
         assert!(matches!(result, Err(WebhookError::InvalidSubscription(_))));
@@ -430,7 +519,7 @@ mod tests {
         let subscription = ContractSubscription::new(
             "CABC",
             Vec::new(),
-            Url::parse(&format!("http://{address}/events")).unwrap(),
+            format!("http://{address}/events"),
             secret.as_str(),
         )
         .unwrap();

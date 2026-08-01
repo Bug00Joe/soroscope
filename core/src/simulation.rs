@@ -5,6 +5,7 @@ use ed25519_dalek::Signer as Ed25519Signer;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use soroban_sdk::testutils::Ledger;
 use soroban_sdk::xdr::{
     AccountId, DiagnosticEvent, Hash, HashIdPreimage, HashIdPreimageSorobanAuthorization,
     HostFunction, InvokeContractArgs, InvokeHostFunctionOp, LedgerEntry, LedgerKey,
@@ -1337,6 +1338,76 @@ impl SimulationEngine {
         Ok(wasm_bytes)
     }
 
+    /// Invoke a read-only, zero-argument contract function and return its
+    /// decoded return value, without computing full resource metrics.
+    ///
+    /// Used by the GraphQL token metadata query to assemble a SEP-41
+    /// token's `name`/`symbol`/`decimals` from three simulated invocations
+    /// in a single request instead of three separate `/analyze` REST
+    /// round-trips. Returns `Ok(None)` if the simulation produced no
+    /// result entry (e.g. the function returns `void`).
+    pub async fn invoke_read_only(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+    ) -> Result<Option<soroban_sdk::xdr::ScVal>, SimulationError> {
+        let transaction_xdr = self.create_invoke_transaction(contract_id, function_name, vec![])?;
+
+        let (url, auth_header, auth_value) = match &self.registry {
+            Some(reg) => {
+                let p = reg
+                    .healthy_providers()
+                    .await
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        SimulationError::RpcRequestFailed("No healthy providers".to_string())
+                    })?;
+                (p.url.clone(), p.auth_header.clone(), p.auth_value.clone())
+            }
+            None => (self.rpc_url.clone(), None, None),
+        };
+
+        let request = SimulateTransactionRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "simulateTransaction".to_string(),
+            params: SimulateTransactionParams {
+                transaction: transaction_xdr,
+            },
+        };
+
+        let mut req_builder = self.client.post(&url).json(&request);
+        if let (Some(header), Some(value)) = (auth_header.as_deref(), auth_value.as_deref()) {
+            req_builder = req_builder.header(header, value);
+        }
+        self.rpc_throttle.wait().await;
+        let response = req_builder.send().await?;
+        self.rpc_throttle.observe(response.headers()).await;
+        let response: SimulateTransactionResponse = response
+            .json()
+            .await
+            .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
+
+        let result = match response.result {
+            ResponseResult::Success { result } => result,
+            ResponseResult::Error { error } => {
+                return Err(SimulationError::NodeError(error.message))
+            }
+        };
+
+        let Some(first) = result.results.first() else {
+            return Ok(None);
+        };
+        let xdr_b64 = first.get("xdr").and_then(|v| v.as_str()).ok_or_else(|| {
+            SimulationError::InvalidContract("Missing return value XDR".to_string())
+        })?;
+        let bytes = BASE64.decode(xdr_b64)?;
+        let scval = soroban_sdk::xdr::ScVal::from_xdr(&bytes, Limits::none())
+            .map_err(|e| SimulationError::XdrError(e.to_string()))?;
+        Ok(Some(scval))
+    }
+
     /// Simulate transaction from a deployed contract ID
     ///
     /// # Arguments
@@ -1807,7 +1878,9 @@ impl SimulationEngine {
         // 2. Build transaction XDR
         let invoke_op = InvokeHostFunctionOp {
             host_function,
-            auth: vec![].try_into().unwrap(),
+            auth: vec![]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Too many auth entries".to_string()))?,
         };
 
         let operation = Operation {
@@ -1823,7 +1896,9 @@ impl SimulationEngine {
             seq_num: SequenceNumber(0),
             cond: Preconditions::None,
             memo: Memo::None,
-            operations: vec![operation].try_into().unwrap(),
+            operations: vec![operation]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to create operations".to_string()))?,
             ext: TransactionExt::V1(soroban_data),
         };
 
@@ -3007,7 +3082,11 @@ impl SimulationEngine {
             .map_err(|e| SimulationError::XdrError(format!("Encode invocation: {e}")))?;
         let nonce_input = [&public_key[..], &invocation_xdr[..]].concat();
         let nonce_hash = Sha256::digest(&nonce_input);
-        let nonce = i64::from_be_bytes(nonce_hash[..8].try_into().unwrap());
+        let nonce = i64::from_be_bytes(
+            nonce_hash[..8]
+                .try_into()
+                .map_err(|_| SimulationError::XdrError("Failed to derive nonce from hash".to_string()))?,
+        );
 
         // 3. Compute the network id
         let network_id: [u8; 32] = Sha256::digest(network_passphrase.as_bytes()).into();
@@ -3168,6 +3247,7 @@ pub fn profile_contract_with_flamegraph(
     function_name: String,
     args: Vec<String>,
 ) -> Result<(SorobanResources, ProfileResult), SimulationError> {
+    use soroban_sdk::testutils::Ledger;
     use soroban_sdk::{Env, Symbol, Val};
     use std::time::Instant;
 
@@ -4407,6 +4487,7 @@ mod tests {
     }
     #[test]
     fn test_debug_soroban_wasm_counter() {
+        use soroban_sdk::testutils::Ledger;
         use soroban_sdk::{Env, Symbol, Val};
         let wasm = soroban_wasm();
         let instr = WasmInstrumenter::new(&wasm).expect("parse ok");
