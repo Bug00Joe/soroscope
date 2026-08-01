@@ -1,14 +1,43 @@
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
+import {
+  Menu,
+  X,
+  Layers,
+  History,
+  Activity,
+  List,
+  Sun,
+  Moon,
+  Network,
+  Search,
+  Settings,
+} from "lucide-react";
 import { Menu, X, Layers, History, Activity, List, Sun, Moon, TrendingUp } from "lucide-react";
 import { useTheme } from "next-themes";
 import { ConnectButton } from "./ConnectButton";
 import { NetworkSwitcher } from "./NetworkSwitcher";
 
+export type NavTab = "explorer" | "history" | "transactions" | "schema";
+
+const NAV_TABS: { id: NavTab; label: string; Icon: typeof Layers }[] = [
+  { id: "explorer", label: "Result", Icon: Layers },
+  { id: "schema", label: "Schema", Icon: Network },
+  { id: "history", label: "History", Icon: History },
+  { id: "transactions", label: "Transactions", Icon: List },
+];
 export type NavTab = "explorer" | "history" | "transactions" | "analytics";
 
 interface HeaderNavProps {
   tab: NavTab;
   setTab: (tab: NavTab) => void;
+}
+
+/** Ask the app-wide overlay to open, same as pressing Cmd+K. */
+function openGlobalSearch() {
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+  );
 }
 
 export function HeaderNav({ tab, setTab }: HeaderNavProps) {
@@ -68,6 +97,25 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
         {/* Desktop Navigation & Actions */}
         <div className="hidden sm:flex sm:items-center sm:gap-4">
+          <button
+            type="button"
+            onClick={openGlobalSearch}
+            aria-label="Open global search (Control K)"
+            className="flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+          >
+            <Search className="h-4 w-4" />
+            <span className="hidden lg:inline">Search</span>
+            <kbd className="rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+              ⌘K
+            </kbd>
+          </button>
+          <Link
+            href="/settings"
+            aria-label="Open settings"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-slate-800 bg-slate-900 p-2.5 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+          >
+            <Settings className="h-5 w-5" />
+          </Link>
           <NetworkSwitcher />
           {mounted && (
             <button
@@ -102,54 +150,38 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
       {/* Desktop Tabs Bar (>= 640px) */}
       <div className="hidden sm:flex border-t border-slate-800/80 bg-slate-950/60 px-4 sm:px-6 lg:px-8">
         <div className="mx-auto flex w-full max-w-6xl">
-          <button
-            type="button"
+          {NAV_TABS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              aria-current={tab === id ? "page" : undefined}
+              className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
+                tab === id
+                  ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
+                  : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
             onClick={() => setTab("explorer")}
-            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
               tab === "explorer"
-                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
-                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
-            }`}
-          >
             <Layers className="h-4 w-4" />
             Result
-          </button>
-          <button
-            type="button"
             onClick={() => setTab("history")}
-            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
               tab === "history"
-                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
-                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
-            }`}
-          >
             <History className="h-4 w-4" />
             History
-          </button>
-          <button
-            type="button"
             onClick={() => setTab("transactions")}
-            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
               tab === "transactions"
-                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
-                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
-            }`}
-          >
             <List className="h-4 w-4" />
             Transactions
-          </button>
-          <button
-            type="button"
             onClick={() => setTab("analytics")}
-            className={`flex items-center gap-2 border-b-2 px-6 py-3 text-sm font-medium transition-colors ${
               tab === "analytics"
-                ? "border-cyan-400 text-cyan-400 bg-cyan-950/20"
-                : "border-transparent text-slate-400 hover:border-slate-700 hover:text-slate-200"
-            }`}
-          >
             <TrendingUp className="h-4 w-4" />
             LP Analytics
-          </button>
         </div>
       </div>
 
@@ -190,44 +222,43 @@ export function HeaderNav({ tab, setTab }: HeaderNavProps) {
 
               {/* Drawer Links */}
               <nav className="mt-6 flex flex-col gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleSelectTab("explorer")}
-                  className={`flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium transition-colors ${
-                    tab === "explorer"
-                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold"
-                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
-                  }`}
-                >
-                  <Layers className="h-5 w-5" />
-                  <span>Result</span>
-                </button>
+                {NAV_TABS.map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleSelectTab(id)}
+                    aria-current={tab === id ? "page" : undefined}
+                    className={`flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium transition-colors ${
+                      tab === id
+                        ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold"
+                        : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
+                    }`}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span>{label}</span>
+                  </button>
+                ))}
 
                 <button
                   type="button"
-                  onClick={() => handleSelectTab("history")}
-                  className={`flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium transition-colors ${
-                    tab === "history"
-                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold"
-                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
-                  }`}
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    openGlobalSearch();
+                  }}
+                  className="flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium text-slate-300 transition-colors hover:bg-slate-800/80 hover:text-white"
                 >
-                  <History className="h-5 w-5" />
-                  <span>History</span>
+                  <Search className="h-5 w-5" />
+                  <span>Search</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => handleSelectTab("transactions")}
-                  className={`flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium transition-colors ${
-                    tab === "transactions"
-                      ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-semibold"
-                      : "text-slate-300 hover:bg-slate-800/80 hover:text-white"
-                  }`}
+                <Link
+                  href="/settings"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex min-h-[48px] w-full items-center gap-3 rounded-xl px-4 py-3.5 text-base font-medium text-slate-300 transition-colors hover:bg-slate-800/80 hover:text-white"
                 >
-                  <List className="h-5 w-5" />
-                  <span>Transactions</span>
-                </button>
+                  <Settings className="h-5 w-5" />
+                  <span>Settings</span>
+                </Link>
               </nav>
             </div>
 

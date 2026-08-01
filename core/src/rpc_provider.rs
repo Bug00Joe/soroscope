@@ -461,24 +461,59 @@ impl ProviderRegistry {
     pub fn spawn_health_checker(
         self: &Arc<Self>,
         interval: Duration,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
     ) -> tokio::task::JoinHandle<()> {
         let registry = Arc::clone(self);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
-                ticker.tick().await;
-                registry.run_health_checks().await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => {
+                        tracing::info!("RPC health checker shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.recv() => {
+                                tracing::info!("RPC health checker shutting down");
+                                break;
+                            }
+                            _ = registry.run_health_checks() => {}
+                        }
+                    }
+                }
             }
         })
     }
 
-    pub fn spawn_gossip_task(self: &Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_gossip_task(
+        self: &Arc<Self>,
+        interval: Duration,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
         let registry = Arc::clone(self);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
-                ticker.tick().await;
-                registry.run_gossip_round().await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => {
+                        tracing::info!("Provider gossip task shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.recv() => {
+                                tracing::info!("Provider gossip task shutting down");
+                                break;
+                            }
+                            _ = registry.run_gossip_round() => {}
+                        }
+                    }
+                }
             }
         })
     }
@@ -1255,5 +1290,37 @@ mod tests {
         // EMA for `a` converged to 1_000; `b` seeded at 10_000.
         assert_eq!(a.ema_rtt_us, 1_000);
         assert_eq!(b.ema_rtt_us, 10_000);
+    }
+
+    #[tokio::test]
+    async fn health_checker_exits_when_shutdown_is_broadcast() {
+        let registry = ProviderRegistry::new(vec![make_provider("a", "http://a.test")]);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = registry.spawn_health_checker(Duration::from_millis(10), shutdown_rx);
+
+        shutdown_tx
+            .send(())
+            .expect("shutdown broadcast should succeed");
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("health checker should exit promptly after shutdown")
+            .expect("health checker task should not panic");
+    }
+
+    #[tokio::test]
+    async fn gossip_task_exits_when_shutdown_is_broadcast() {
+        let registry = ProviderRegistry::new(vec![make_provider("a", "http://a.test")]);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = registry.spawn_gossip_task(Duration::from_millis(10), shutdown_rx);
+
+        shutdown_tx
+            .send(())
+            .expect("shutdown broadcast should succeed");
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("gossip task should exit promptly after shutdown")
+            .expect("gossip task should not panic");
     }
 }

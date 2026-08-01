@@ -116,3 +116,20 @@ fn test_reject_when_not_enough_valid_prices() {
 
     assert_eq!(client.aggregate_price(&sources), Err(Error::NotEnoughValidPrices));
 }
+
+#[test]
+fn test_aggregate_median_even_number_sources() {
+    let env = Env::default();
+    let (ok_100, ok_101, ok_99, _, _) = register_sources(&env);
+    
+    // Register another valid source
+    let ok_102 = env.register(PriceSourceOk101, ()); 
+    let aggregator_id = env.register(OracleAggregator, ());
+    let client = OracleAggregatorClient::new(&env, &aggregator_id);
+    
+    // 4 sources: 100, 101, 99, 101 -> sorted: 99, 100, 101, 101
+    // Median should be (100 + 101) / 2 = 100
+    let sources = Vec::from_array(&env, [ok_100, ok_101, ok_99, ok_102]);
+
+    assert_eq!(client.aggregate_price(&sources), Ok(100));
+}
