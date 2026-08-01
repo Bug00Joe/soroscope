@@ -396,6 +396,25 @@ impl JobQueue {
         Ok(id)
     }
 
+    /// Number of jobs currently waiting in the Redis queue. Used for the
+    /// `job_queue_depth` metric.
+    pub async fn queue_depth(&self) -> Result<i64, JobError> {
+        let mut conn = self
+            .redis
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| {
+                JobError::ProcessingFailed(format!("Failed to get Redis connection: {}", e))
+            })?;
+
+        let depth: i64 = conn
+            .llen("soroscope:jobs:queue")
+            .await
+            .map_err(|e| JobError::ProcessingFailed(format!("Redis LLEN failed: {}", e)))?;
+
+        Ok(depth)
+    }
+
     /// Get a job by ID
     pub async fn get(&self, id: &JobId) -> Result<Option<Job>, JobError> {
         let job = match &self.pool {
@@ -672,8 +691,11 @@ impl JobQueue {
         Ok(())
     }
 
-    /// Spawn a background cleanup task
-    pub fn spawn_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
+    /// Spawn a background cleanup task that exits when `shutdown` fires.
+    pub fn spawn_cleanup_task(
+        &self,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
         let queue = self.clone();
         let interval_secs = self.config.cleanup_interval_secs;
 
@@ -681,10 +703,26 @@ impl JobQueue {
             let mut interval = interval(Duration::from_secs(interval_secs));
 
             loop {
-                interval.tick().await;
-
-                if let Err(e) = queue.cleanup().await {
-                    tracing::error!("Cleanup task error: {}", e);
+                tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => {
+                        tracing::info!("Job queue cleanup task shutting down");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        tokio::select! {
+                            biased;
+                            _ = shutdown.recv() => {
+                                tracing::info!("Job queue cleanup task shutting down");
+                                break;
+                            }
+                            result = queue.cleanup() => {
+                                if let Err(e) = result {
+                                    tracing::error!("Cleanup task error: {}", e);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -871,15 +909,19 @@ impl JobWorker {
         self
     }
 
-    /// Start the worker loop
-    pub async fn run(self) {
+    /// Start the worker loop until a shutdown signal is received.
+    ///
+    /// Redis blocking pops use a short timeout so the loop can observe
+    /// shutdown promptly instead of hanging forever on `brpoplpush`.
+    pub async fn run(self, mut shutdown: tokio::sync::broadcast::Receiver<()>) {
         let worker_id = Uuid::new_v4().to_string();
         tracing::info!(worker_id = %worker_id, "Job worker started");
 
-        // Spawn heartbeat task
+        // Spawn heartbeat task (also listens for shutdown)
         let redis_clone = self.queue.redis.clone();
         let worker_id_clone = worker_id.clone();
-        tokio::spawn(async move {
+        let mut heartbeat_shutdown = shutdown.resubscribe();
+        let heartbeat_handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(10));
             let mut conn = match redis_clone.get_multiplexed_async_connection().await {
                 Ok(c) => c,
@@ -890,9 +932,16 @@ impl JobWorker {
             };
 
             loop {
-                interval.tick().await;
-                let key = format!("soroscope:workers:{}:heartbeat", worker_id_clone);
-                let _: Result<(), _> = conn.set_ex(key, "alive", 30).await;
+                tokio::select! {
+                    _ = heartbeat_shutdown.recv() => {
+                        tracing::info!(worker_id = %worker_id_clone, "Heartbeat task shutting down");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        let key = format!("soroscope:workers:{}:heartbeat", worker_id_clone);
+                        let _: Result<(), _> = conn.set_ex(key, "alive", 30).await;
+                    }
+                }
             }
         });
 
@@ -903,16 +952,27 @@ impl JobWorker {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("Worker failed to get Redis connection: {}", e);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
+                    tokio::select! {
+                        _ = shutdown.recv() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    }
                 }
             };
 
             // Reliability pattern: RPOPLPUSH (or BLMOVE)
-            // Pop from main queue and push to processing list
-            let job_id_res: Result<Option<String>, _> = conn
-                .brpoplpush("soroscope:jobs:queue", "soroscope:jobs:processing", 0.0)
-                .await;
+            // Pop from main queue and push to processing list.
+            // Timeout of 1s lets the worker wake and check shutdown.
+            let job_id_res: Result<Option<String>, _> = tokio::select! {
+                _ = shutdown.recv() => {
+                    tracing::info!(worker_id = %worker_id, "Job worker shutting down");
+                    break;
+                }
+                result = conn.brpoplpush(
+                    "soroscope:jobs:queue",
+                    "soroscope:jobs:processing",
+                    1.0,
+                ) => result,
+            };
 
             match job_id_res {
                 Ok(Some(id_str)) => {
@@ -967,10 +1027,17 @@ impl JobWorker {
                 Ok(None) => {}
                 Err(e) => {
                     tracing::error!("Error fetching next job from Redis: {}", e);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::select! {
+                        _ = shutdown.recv() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
                 }
             }
         }
+
+        // Ensure the heartbeat task exits with the worker.
+        let _ = heartbeat_handle.await;
+        tracing::info!(worker_id = %worker_id, "Job worker stopped");
     }
 
     async fn process_job(
