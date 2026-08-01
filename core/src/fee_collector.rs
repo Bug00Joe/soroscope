@@ -142,9 +142,18 @@ impl FeeCollector {
         // Get latest ledger sequence
         let latest_sequence = self.get_latest_ledger_sequence().await?;
 
-        let last_collected = self
+        let mut last_collected = self
             .last_collected_sequence
             .load(std::sync::atomic::Ordering::Relaxed);
+
+        // If in-memory state is uninitialized, load from the database
+        if last_collected == 0 {
+            if let Ok(Some(db_latest)) = self.store.get_latest_sequence().await {
+                last_collected = db_latest as u64;
+                self.last_collected_sequence
+                    .store(last_collected, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
 
         // Skip if we've already collected this ledger
         if latest_sequence <= last_collected {
@@ -156,7 +165,43 @@ impl FeeCollector {
             return Ok(false);
         }
 
-        // Fetch ledger details
+        // Trigger automatic catch-up replay loop upon reconnection / gap detection
+        if last_collected > 0 && latest_sequence > last_collected + 1 {
+            let start = last_collected + 1;
+            let end = latest_sequence - 1;
+            tracing::info!(
+                start = start,
+                end = end,
+                "RPC Node re-synchronized. Catching up missed ledgers."
+            );
+            for seq in start..=end {
+                match self.fetch_ledger_fee_data(seq).await {
+                    Ok(sample) => {
+                        if let Err(e) = self.store.upsert_ledger_sample(&sample).await {
+                            tracing::error!(
+                                ledger = seq,
+                                error = %e,
+                                "Failed to save catch-up ledger sample"
+                            );
+                            break;
+                        }
+                        self.last_collected_sequence
+                            .store(seq, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(ledger = seq, "Successfully caught up missed ledger");
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            ledger = seq,
+                            error = %e,
+                            "Failed to fetch catch-up ledger details; stopping catch-up replay"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fetch latest ledger details
         let sample = self.fetch_ledger_fee_data(latest_sequence).await?;
 
         // Store in database
