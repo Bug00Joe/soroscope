@@ -2,7 +2,7 @@
 
 use emergency_guard::EmergencyGuard;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Map, String,
 };
 
 #[cfg(test)]
@@ -52,6 +52,7 @@ pub struct Proposal {
     pub for_votes: i128,
     pub against_votes: i128,
     pub open: bool,
+    pub voter_receipts: Map<Address, VoteReceipt>,
 }
 
 #[contracttype]
@@ -263,6 +264,7 @@ impl GovernanceContract {
             for_votes: 0,
             against_votes: 0,
             open: true,
+            voter_receipts: Map::new(&env),
         };
 
         write_proposal(&env, &proposal);
@@ -304,9 +306,8 @@ impl GovernanceContract {
         proposal_id: u32,
         voter: Address,
     ) -> Option<VoteReceipt> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Receipt(proposal_id, voter))
+        let proposal = get_proposal(&env, proposal_id).ok()?;
+        proposal.voter_receipts.get(voter)
     }
 
     pub fn cast_vote(
@@ -332,17 +333,13 @@ impl GovernanceContract {
             .get(&DataKey::Voter(voter.clone()))
             .ok_or(Error::VoterNotRegistered)?;
 
-        let receipt_key = DataKey::Receipt(proposal_id, voter.clone());
-        let mut receipt = env
-            .storage()
-            .persistent()
-            .get::<_, VoteReceipt>(&receipt_key)
-            .unwrap_or(VoteReceipt {
-                support,
-                credits_spent: 0,
-                votes_cast: 0,
-                voting_units_snapshot: profile.voting_units,
-            });
+        let mut receipts = proposal.voter_receipts.clone();
+        let mut receipt = receipts.get(voter.clone()).unwrap_or(VoteReceipt {
+            support,
+            credits_spent: 0,
+            votes_cast: 0,
+            voting_units_snapshot: profile.voting_units,
+        });
 
         if receipt.credits_spent > 0 && receipt.support != support {
             return Err(Error::VoteSideMismatch);
@@ -379,8 +376,10 @@ impl GovernanceContract {
         receipt.credits_spent = updated_credits;
         receipt.votes_cast = votes_after;
 
+        receipts.set(voter, receipt.clone());
+        proposal.voter_receipts = receipts;
+
         write_proposal(&env, &proposal);
-        env.storage().persistent().set(&receipt_key, &receipt);
 
         Ok(receipt)
     }
